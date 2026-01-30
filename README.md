@@ -1,0 +1,2 @@
+# astrbot_plugin_steamwatch
+通过astrbot视奸你的好友
