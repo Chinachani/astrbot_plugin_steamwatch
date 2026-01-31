@@ -757,7 +757,7 @@ class SteamWatchPlugin(Star):
                 self._session_start[steamid] = time.time()
                 await self._notify_by_steamid(
                     steamid,
-                    f"{player.get('personaname', steamid)} 正在玩 {game_name or '某个游戏'}。",
+                    f"{player.get('personaname', steamid)} 正在玩 {game_name or '某个游戏'}！",
                 )
             elif notify_on_stop and last_playing and not playing:
                 duration_min = self._consume_session_minutes(steamid)
