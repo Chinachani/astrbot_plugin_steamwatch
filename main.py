@@ -458,7 +458,7 @@ class SteamWatchPlugin(Star):
         playing = "gameid" in player or "gameextrainfo" in player
         game_name = player.get("gameextrainfo")
         if playing:
-            yield event.plain_result(f"{name} 正在玩 {game_name or '某个游戏'}。")
+            yield event.plain_result(f"{name} 正在玩 {game_name or '某个游戏'}！")
         else:
             yield event.plain_result(f"{name} 当前未在游戏中。")
 
@@ -511,7 +511,7 @@ class SteamWatchPlugin(Star):
             parts = [str(x) for x in (country, state, city) if x]
             lines.append(f"地区：{'-'.join(parts)}")
         if playing:
-            lines.append(f"正在玩：{game_name or '某个游戏'} (appid: {appid})")
+            lines.append(f"正在玩：{game_name or '某个游戏'} (appid: {appid})！")
         else:
             lines.append("当前未在游戏中。")
         if appid:
@@ -548,7 +548,7 @@ class SteamWatchPlugin(Star):
         playing = "gameid" in player or "gameextrainfo" in player
         game_name = player.get("gameextrainfo")
         if playing:
-            await self._notify_by_steamid(steamid, f"{name} 正在玩 {game_name or '某个游戏'}。")
+            await self._notify_by_steamid(steamid, f"{name} 正在玩 {game_name or '某个游戏'}！")
         else:
             await self._notify_by_steamid(steamid, f"{name} 当前未在游戏中。")
         yield event.plain_result("已推送当前状态。")
@@ -757,7 +757,7 @@ class SteamWatchPlugin(Star):
                 self._session_start[steamid] = time.time()
                 await self._notify_by_steamid(
                     steamid,
-                    f"{player.get('personaname', steamid)} 正在玩 {game_name or '某个游戏'}。",
+                    f"{player.get('personaname', steamid)} 正在玩 {game_name or '某个游戏'}！",
                 )
             elif notify_on_stop and last_playing and not playing:
                 duration_min = self._consume_session_minutes(steamid)
