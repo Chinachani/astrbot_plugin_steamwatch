@@ -1,4 +1,4 @@
-# astrbot_plugin_steamwatch
+﻿# astrbot_plugin_steamwatch
 
 监控 SteamID 是否在进行游戏，并推送通知。支持绑定与 @用户查询、分群订阅、代理与连通性测试，以及游戏时长/成就等信息展示。
 
@@ -16,6 +16,8 @@
 - `binding_meta`：绑定昵称（由指令维护，格式 user_id:nickname）
 - `admin_user_ids`：管理员用户ID列表（为空则不限制敏感指令）
 - `notify_targets`：接收通知的会话目标
+- `default_platform_id`：订阅会话默认平台ID（兼容旧订阅）
+- `default_message_type`：订阅会话默认消息类型（GroupMessage/FriendMessage/OtherMessage）
 - `notify_group_enabled`：是否启用分群订阅
 - `notify_groups`：分群订阅（格式 group:target）
 - `steamid_groups`：SteamID 分组（格式 steamid:group）
@@ -33,6 +35,9 @@
 - `/sw` 查看菜单
 - `/sw add|remove|list|interval`
 - `/sw sub|unsub [group]`
+- `/sw subclean` 清理无效订阅（管理员）
+- `/sw subinfo` 查看当前会话订阅信息
+- `/sw groupinfo [group]` 查看分组订阅详情
 - `/sw resolve|query|status|info`
 - `/sw test|proxytest`
 - `/sw bind|unbind|me`
@@ -47,6 +52,9 @@
 - `/sw sub <group>` 订阅指定分组通知
 - `/sw unsub <group>` 取消订阅指定分组通知
 - `/sw add <steamid|me|@qq> <group>` 为监控对象绑定分组（用于通知路由）
+- `/sw subinfo` 查看当前会话订阅
+- `/sw groupinfo [group]` 查看分组订阅详情
+- `/sw subclean` 清理无效订阅（管理员）
 
 ### 完整菜单示例
 ```
@@ -60,6 +68,9 @@
 /steamwatch_interval <seconds>
 /steamwatch_subscribe
 /steamwatch_unsubscribe
+/steamwatch_subinfo
+/steamwatch_groupinfo [group]
+/steamwatch_subclean
 
 查询：
 /steamwatch_query <steamid64|profile_url|vanity|friend_code|me>
@@ -87,6 +98,9 @@
 - `/steamwatch_interval <seconds>` 设置轮询间隔
 - `/steamwatch_subscribe` 订阅当前会话通知（管理员）
 - `/steamwatch_unsubscribe` 取消订阅（管理员）
+- `/steamwatch_subinfo` 查看当前会话订阅信息
+- `/steamwatch_groupinfo [group]` 查看分组订阅详情
+- `/steamwatch_subclean` 清理无效订阅（管理员）
 - `/steamwatch_resolve <steamid64|profile_url|vanity|friend_code|me>` 解析为 SteamID64
 - `/steamwatch_menu` 查看菜单
 - `/steamwatch_query <steamid64|profile_url|vanity|friend_code|me>` 立即查询一次
@@ -115,3 +129,10 @@
 - 绑定与查询支持 @用户，且输出好友码为账号 ID（可选显示 CS:GO 好友码）
 - 新增分群订阅与通知路由
 - 轮询记录本次游玩时长并生成评价
+
+### v1.1.2
+- 分群订阅会话格式自动归一化，兼容旧订阅数据
+- 新增订阅查询指令：/sw subinfo 与 /sw groupinfo
+
+### v1.1.3
+- 新增订阅清理指令：/sw subclean

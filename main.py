@@ -32,13 +32,14 @@ PERSONA_STATE_TEXT = {
     "astrbot_plugin_steamwatch",
     "Chinachani",
     "通过astrbot视奸你的steam好友！",
-    "1.1.0",
+    "1.1.3",
     "https://github.com/Chinachani/astrbot_plugin_steamwatch",
 )
 class SteamWatchPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
+        self._normalize_notify_config()
         self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._poll_loop())
         self._last_state: Dict[str, Tuple[bool, Optional[str]]] = {}
@@ -89,6 +90,18 @@ class SteamWatchPlugin(Star):
             return
         if action in {"sub", "subscribe"}:
             async for item in self._cmd_subscribe(event):
+                yield item
+            return
+        if action in {"subinfo", "sub_info"}:
+            async for item in self._cmd_subinfo(event):
+                yield item
+            return
+        if action in {"groupinfo", "group_info"}:
+            async for item in self._cmd_groupinfo(event, rest):
+                yield item
+            return
+        if action in {"subclean", "sub_clean"}:
+            async for item in self._cmd_subclean(event):
                 yield item
             return
         if action in {"unsub", "unsubscribe"}:
@@ -165,6 +178,16 @@ class SteamWatchPlugin(Star):
     @filter.command("steamwatch_unsubscribe")
     async def unsubscribe(self, event: AstrMessageEvent):
         async for item in self._cmd_unsubscribe(event):
+            yield item
+
+    @filter.command("steamwatch_subinfo")
+    async def subinfo(self, event: AstrMessageEvent):
+        async for item in self._cmd_subinfo(event):
+            yield item
+
+    @filter.command("steamwatch_groupinfo")
+    async def groupinfo(self, event: AstrMessageEvent, group: str = ""):
+        async for item in self._cmd_groupinfo(event, [group] if group else []):
             yield item
 
     @filter.command("steamwatch_resolve")
@@ -418,6 +441,66 @@ class SteamWatchPlugin(Star):
         self._set_notify_targets(targets)
         yield event.plain_result("已取消当前会话的通知订阅。")
 
+    async def _cmd_subinfo(self, event: AstrMessageEvent):
+        deny = self._require_admin(event)
+        if deny:
+            yield event.plain_result(deny)
+            return
+        target = event.unified_msg_origin
+        lines = ["当前会话订阅信息："]
+        if self._group_enabled():
+            groups = self._get_notify_groups()
+            matched = [g for g, targets in groups.items() if target in targets]
+            if matched:
+                lines.append(f"- 分组订阅：{', '.join(matched)}")
+            else:
+                lines.append("- 分组订阅：无")
+        targets = self._get_notify_targets()
+        lines.append("- 全局订阅：已订阅" if target in targets else "- 全局订阅：未订阅")
+        yield event.plain_result("\n".join(lines))
+
+    async def _cmd_groupinfo(self, event: AstrMessageEvent, args: List[str]):
+        deny = self._require_admin(event)
+        if deny:
+            yield event.plain_result(deny)
+            return
+        if not self._group_enabled():
+            yield event.plain_result("未启用分群订阅，请先开启 notify_group_enabled。")
+            return
+        groups = self._get_notify_groups()
+        if not args:
+            if not groups:
+                yield event.plain_result("暂无分组订阅记录。")
+                return
+            lines = ["分组订阅列表："]
+            for name, targets in groups.items():
+                lines.append(f"- {name}（{len(targets)} 个会话）")
+            yield event.plain_result("\n".join(lines))
+            return
+        name = args[0]
+        targets = groups.get(name, [])
+        if not targets:
+            yield event.plain_result("该分组没有任何订阅会话。")
+            return
+        lines = [f"分组 {name} 订阅会话："]
+        lines.extend(f"- {t}" for t in targets)
+        yield event.plain_result("\n".join(lines))
+
+    async def _cmd_subclean(self, event: AstrMessageEvent):
+        deny = self._require_admin(event)
+        if deny:
+            yield event.plain_result(deny)
+            return
+        before_targets = list(self.config.get("notify_targets", []))
+        before_groups = list(self.config.get("notify_groups", []))
+        self._normalize_notify_config()
+        after_targets = list(self.config.get("notify_targets", []))
+        after_groups = list(self.config.get("notify_groups", []))
+        lines = ["已执行订阅清理："]
+        lines.append(f"- notify_targets: {len(before_targets)} -> {len(after_targets)}")
+        lines.append(f"- notify_groups: {len(before_groups)} -> {len(after_groups)}")
+        yield event.plain_result("\n".join(lines))
+
     async def _cmd_resolve(self, event: AstrMessageEvent, args: List[str]):
         target = self._extract_target_or_at(event, args)
         if not target:
@@ -664,7 +747,7 @@ class SteamWatchPlugin(Star):
             "简化指令：/sw <子命令>",
             "",
             "管理：/sw add|remove|list|interval",
-            "通知：/sw sub|unsub [group]",
+            "通知：/sw sub|unsub [group] | subinfo | groupinfo | subclean",
             "查询：/sw query|status|info|resolve",
             "网络：/sw test|proxytest",
             "绑定：/sw bind|unbind|me",
@@ -686,6 +769,9 @@ class SteamWatchPlugin(Star):
             "/steamwatch_interval <seconds>",
             "/steamwatch_subscribe [group]",
             "/steamwatch_unsubscribe [group]",
+            "/steamwatch_subinfo",
+            "/steamwatch_groupinfo [group]",
+            "/steamwatch_subclean",
             "",
             "查询：",
             "/steamwatch_query <steamid64|profile_url|vanity|friend_code|me>",
@@ -886,6 +972,64 @@ class SteamWatchPlugin(Star):
     # ------------------------
     # Helpers: config/bindings
     # ------------------------
+    def _normalize_message_type(self, value: str) -> str:
+        text = (value or "").strip()
+        lowered = text.lower()
+        if lowered in {"group", "groupmessage", "group_message"}:
+            return "GroupMessage"
+        if lowered in {"friend", "private", "privatemessage", "friendmessage"}:
+            return "FriendMessage"
+        if lowered in {"other", "othermessage"}:
+            return "OtherMessage"
+        return text
+
+    def _normalize_target(self, target: str) -> Optional[str]:
+        if not target:
+            return None
+        default_platform = str(self.config.get("default_platform_id", "aiocqhttp")).strip()
+        default_msg_type = self._normalize_message_type(
+            str(self.config.get("default_message_type", "GroupMessage")).strip()
+        )
+        parts = target.split(":", 2)
+        if len(parts) == 1:
+            return f"{default_platform}:{default_msg_type}:{parts[0]}"
+        if len(parts) == 2:
+            msg_type = self._normalize_message_type(parts[0])
+            return f"{default_platform}:{msg_type}:{parts[1]}"
+        if len(parts) == 3:
+            parts[1] = self._normalize_message_type(parts[1])
+            return ":".join(parts)
+        return None
+
+    def _normalize_notify_config(self) -> None:
+        changed = False
+        targets = self._get_notify_targets()
+        norm_targets: List[str] = []
+        for t in targets:
+            normalized = self._normalize_target(str(t).strip())
+            if normalized and normalized not in norm_targets:
+                norm_targets.append(normalized)
+        if norm_targets != targets:
+            self.config["notify_targets"] = norm_targets
+            changed = True
+
+        groups = self._get_notify_groups()
+        norm_groups: Dict[str, List[str]] = {}
+        for group, targets in groups.items():
+            cleaned: List[str] = []
+            for t in targets:
+                normalized = self._normalize_target(str(t).strip())
+                if normalized and normalized not in cleaned:
+                    cleaned.append(normalized)
+            if cleaned:
+                norm_groups[group] = cleaned
+        if norm_groups != groups:
+            self._set_notify_groups(norm_groups)
+            changed = True
+
+        if changed:
+            self.config.save_config()
+
     def _get_user_key(self, event: AstrMessageEvent) -> str:
         for name in ("get_sender_id", "get_user_id", "get_sender_uid"):
             attr = getattr(event, name, None)
@@ -913,10 +1057,24 @@ class SteamWatchPlugin(Star):
         self.config.save_config()
 
     def _get_notify_targets(self) -> List[str]:
-        return list(self.config.get("notify_targets", []))
+        targets = list(self.config.get("notify_targets", []))
+        cleaned: List[str] = []
+        for t in targets:
+            normalized = self._normalize_target(str(t).strip())
+            if normalized and normalized not in cleaned:
+                cleaned.append(normalized)
+        if cleaned != targets:
+            self.config["notify_targets"] = cleaned
+            self.config.save_config()
+        return cleaned
 
     def _set_notify_targets(self, targets: List[str]):
-        self.config["notify_targets"] = targets
+        cleaned: List[str] = []
+        for t in targets:
+            normalized = self._normalize_target(str(t).strip())
+            if normalized and normalized not in cleaned:
+                cleaned.append(normalized)
+        self.config["notify_targets"] = cleaned
         self.config.save_config()
 
     def _get_bindings(self) -> Dict[str, str]:
@@ -963,16 +1121,21 @@ class SteamWatchPlugin(Star):
             group, target = item.split(":", 1)
             if not group or not target:
                 continue
+            normalized = self._normalize_target(target)
+            if not normalized:
+                continue
             groups.setdefault(group, [])
-            if target not in groups[group]:
-                groups[group].append(target)
+            if normalized not in groups[group]:
+                groups[group].append(normalized)
         return groups
 
     def _set_notify_groups(self, groups: Dict[str, List[str]]):
         items: List[str] = []
         for group, targets in groups.items():
             for target in targets:
-                items.append(f"{group}:{target}")
+                normalized = self._normalize_target(str(target).strip())
+                if normalized:
+                    items.append(f"{group}:{normalized}")
         self.config["notify_groups"] = items
         self.config.save_config()
 

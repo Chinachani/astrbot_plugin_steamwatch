@@ -69,6 +69,16 @@
     "description": "接收通知的会话目标列表",
     "default": []
   },
+  "default_platform_id": {
+    "type": "string",
+    "description": "订阅会话默认平台ID（兼容旧订阅）",
+    "default": "aiocqhttp"
+  },
+  "default_message_type": {
+    "type": "string",
+    "description": "订阅会话默认消息类型（GroupMessage/FriendMessage/OtherMessage）",
+    "default": "GroupMessage"
+  },
   "notify_group_enabled": {
     "type": "bool",
     "description": "是否启用分群订阅",
