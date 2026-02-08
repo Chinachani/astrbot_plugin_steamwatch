@@ -15,6 +15,7 @@
 - `bindings`：用户绑定（由指令维护，格式 user_id:steamid64）
 - `binding_meta`：绑定昵称（由指令维护，格式 user_id:nickname）
 - `admin_user_ids`：管理员用户ID列表（为空则不限制敏感指令）
+- `auto_add_on_bind_when_no_admin`：管理员列表为空时，绑定自动加入监控
 - `notify_targets`：接收通知的会话目标
 - `default_platform_id`：订阅会话默认平台ID（兼容旧订阅）
 - `default_message_type`：订阅会话默认消息类型（GroupMessage/FriendMessage/OtherMessage）
@@ -29,15 +30,24 @@
 - `debug_log`：是否开启调试日志
 - `verify_ssl`：是否校验证书（关闭可绕过 CERTIFICATE_VERIFY_FAILED）
 - `show_csgo_friend_code`：是否在绑定/解析中额外显示 CS:GO 好友码
+- `use_localized_game_name`：是否尝试获取游戏中文名（Steam 商店 API）
+- `game_name_language`：游戏名语言（默认 schinese）
+- `game_name_cache_ttl_sec`：游戏名缓存有效期（秒）
 
 ## 指令
 ### 简化入口
 - `/sw` 查看菜单
+- `/sw manage` 管理模块菜单
+- `/sw notify` 通知模块菜单
+- `/sw query` 查询模块菜单
+- `/sw bind`  绑定模块菜单
+- `/sw net`   网络模块菜单
 - `/sw add|remove|list|interval`
 - `/sw sub|unsub [group]`
 - `/sw subclean` 清理无效订阅（管理员）
 - `/sw subinfo` 查看当前会话订阅信息
 - `/sw groupinfo [group]` 查看分组订阅详情
+- `/sw grouplist` 查看分组订阅列表
 - `/sw resolve|query|status|info`
 - `/sw test|proxytest`
 - `/sw bind|unbind|me`
@@ -54,41 +64,24 @@
 - `/sw add <steamid|me|@qq> <group>` 为监控对象绑定分组（用于通知路由）
 - `/sw subinfo` 查看当前会话订阅
 - `/sw groupinfo [group]` 查看分组订阅详情
+- `/sw grouplist` 查看分组订阅列表
 - `/sw subclean` 清理无效订阅（管理员）
+说明：启用分群订阅后，仅推送已分组目标，不再回退到全局订阅。
 
-### 完整菜单示例
+### 完整菜单示例（模块化）
 ```
-========== SteamWatch 完整菜单 ==========
-简化入口：/sw
-
-管理（管理员）：
-/steamwatch_add <steamid64|profile_url|vanity|friend_code|me>
-/steamwatch_remove <steamid64|profile_url|vanity|friend_code|me>
-/steamwatch_list
-/steamwatch_interval <seconds>
-/steamwatch_subscribe
-/steamwatch_unsubscribe
-/steamwatch_subinfo
-/steamwatch_groupinfo [group]
-/steamwatch_subclean
-
-查询：
-/steamwatch_query <steamid64|profile_url|vanity|friend_code|me>
-/steamwatch_info <steamid64|profile_url|vanity|friend_code|me>
-/steamwatch_status <steamid64|profile_url|vanity|friend_code|me>
-/steamwatch_resolve <steamid64|profile_url|vanity|friend_code|me>
-
-绑定：
-/steamwatch_bind <steamid64|profile_url|vanity|friend_code>
-/steamwatch_unbind [user_id]
-/steamwatch_me
-
-网络：
-/steamwatch_test
-/steamwatch_proxytest
-
-菜单：
-/steamwatch_menu
+========== SteamWatch 菜单 ==========
+简化入口：/sw <模块>
+模块列表：manage / notify / query / bind / net
+--------------------------------------
+【管理】/sw manage  - 监控列表与轮询
+【通知】/sw notify  - 订阅/分组/清理
+【查询】/sw query   - 查询/解析/状态
+【绑定】/sw bind    - 绑定/解绑/我的
+【网络】/sw net     - 连通性测试
+--------------------------------------
+示例：/sw notify
+完整命令：/steamwatch_menu
 ```
 
 ### 完整命令（兼容）
@@ -100,6 +93,7 @@
 - `/steamwatch_unsubscribe` 取消订阅（管理员）
 - `/steamwatch_subinfo` 查看当前会话订阅信息
 - `/steamwatch_groupinfo [group]` 查看分组订阅详情
+- `/steamwatch_grouplist` 查看分组订阅列表
 - `/steamwatch_subclean` 清理无效订阅（管理员）
 - `/steamwatch_resolve <steamid64|profile_url|vanity|friend_code|me>` 解析为 SteamID64
 - `/steamwatch_menu` 查看菜单
@@ -136,3 +130,31 @@
 
 ### v1.1.3
 - 新增订阅清理指令：/sw subclean
+
+### v1.1.4
+- 菜单改为模块化+分隔线版本，子模块补充中文提示
+
+### v1.1.5
+- /sw bind 兼容模块菜单与实际绑定
+- 停止游戏评价改为换行展示
+
+### v1.1.6
+- /sw query 在有参数时正确执行查询（不再被模块菜单拦截）
+
+### v1.1.7
+- 分群订阅启用时不再回退到全局通知
+- 订阅清理会过滤无效会话格式
+
+### v1.1.8
+- 新增分组订阅列表指令：/sw grouplist
+
+### v1.1.9
+- 分群订阅启用且当前群已订阅时，/sw add 自动加入当前分组
+- 已在监控列表中的 SteamID 可更新分组
+
+### v1.1.10
+- 增加可选“中文游戏名”开关（走的 Steam 商店 ，不是第三方翻译，可以保准）
+- 提示：自己决定开不开，游戏名会缓存，但是每次第一次获取的时候可能会很慢
+
+### v1.1.11
+- 管理员列表为空时可选“绑定即加入监控”

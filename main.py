@@ -10,6 +10,7 @@ import httpx
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, register
+from astrbot.core.platform.message_type import MessageType
 
 STEAMID64_BASE = 76561197960265728
 STEAMID64_BASE_HEX = 0x110000100000000
@@ -32,7 +33,7 @@ PERSONA_STATE_TEXT = {
     "astrbot_plugin_steamwatch",
     "Chinachani",
     "通过astrbot视奸你的steam好友！",
-    "1.1.3",
+    "1.1.11",
     "https://github.com/Chinachani/astrbot_plugin_steamwatch",
 )
 class SteamWatchPlugin(Star):
@@ -42,8 +43,9 @@ class SteamWatchPlugin(Star):
         self._normalize_notify_config()
         self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._poll_loop())
-        self._last_state: Dict[str, Tuple[bool, Optional[str]]] = {}
+        self._last_state: Dict[str, Tuple[bool, Optional[str], Optional[str]]] = {}
         self._session_start: Dict[str, float] = {}
+        self._app_name_cache: Dict[str, Tuple[str, float]] = {}
 
     # ------------------------
     # Short command入口
@@ -72,6 +74,21 @@ class SteamWatchPlugin(Star):
             async for item in self._menu_text(event):
                 yield item
             return
+        if action in {"manage"}:
+            yield event.plain_result(self._menu_manage())
+            return
+        if action in {"notify"}:
+            yield event.plain_result(self._menu_notify())
+            return
+        if action in {"query"} and not rest:
+            yield event.plain_result(self._menu_query())
+            return
+        if action in {"bind"} and not rest:
+            yield event.plain_result(self._menu_bind())
+            return
+        if action in {"net"}:
+            yield event.plain_result(self._menu_net())
+            return
         if action in {"add"}:
             async for item in self._cmd_add(event, rest):
                 yield item
@@ -98,6 +115,10 @@ class SteamWatchPlugin(Star):
             return
         if action in {"groupinfo", "group_info"}:
             async for item in self._cmd_groupinfo(event, rest):
+                yield item
+            return
+        if action in {"grouplist", "group_list"}:
+            async for item in self._cmd_groupinfo(event, []):
                 yield item
             return
         if action in {"subclean", "sub_clean"}:
@@ -188,6 +209,11 @@ class SteamWatchPlugin(Star):
     @filter.command("steamwatch_groupinfo")
     async def groupinfo(self, event: AstrMessageEvent, group: str = ""):
         async for item in self._cmd_groupinfo(event, [group] if group else []):
+            yield item
+
+    @filter.command("steamwatch_grouplist")
+    async def grouplist(self, event: AstrMessageEvent):
+        async for item in self._cmd_groupinfo(event, []):
             yield item
 
     @filter.command("steamwatch_resolve")
@@ -288,13 +314,21 @@ class SteamWatchPlugin(Star):
             return
 
         steamids = self._get_steamids()
+        group = args[1] if len(args) > 1 else ""
+        if not group and self._group_enabled():
+            group = self._get_current_sub_group(event)
         if steamid in steamids:
-            yield event.plain_result(f"{steamid} 已在监控列表中。")
+            if group:
+                groups = self._get_steamid_groups()
+                groups[steamid] = group
+                self._set_steamid_groups(groups)
+                yield event.plain_result(f"{steamid} 已在监控列表中，已更新分组：{group}")
+            else:
+                yield event.plain_result(f"{steamid} 已在监控列表中。")
             return
 
         steamids.append(steamid)
         self._set_steamids(steamids)
-        group = args[1] if len(args) > 1 else ""
         if group:
             groups = self._get_steamid_groups()
             groups[steamid] = group
@@ -499,6 +533,8 @@ class SteamWatchPlugin(Star):
         lines = ["已执行订阅清理："]
         lines.append(f"- notify_targets: {len(before_targets)} -> {len(after_targets)}")
         lines.append(f"- notify_groups: {len(before_groups)} -> {len(after_groups)}")
+        if self._group_enabled():
+            lines.append("提示：分群订阅启用时，仅推送已分组目标，不再回退到全局通知")
         yield event.plain_result("\n".join(lines))
 
     async def _cmd_resolve(self, event: AstrMessageEvent, args: List[str]):
@@ -540,8 +576,10 @@ class SteamWatchPlugin(Star):
         name = player.get("personaname", steamid)
         playing = "gameid" in player or "gameextrainfo" in player
         game_name = player.get("gameextrainfo")
+        appid = _safe_int(player.get("gameid"))
+        display_name = await self._get_localized_game_name(appid, game_name or "某个游戏")
         if playing:
-            yield event.plain_result(f"{name} 正在玩 {game_name or '某个游戏'}！")
+            yield event.plain_result(f"{name} 正在玩 {display_name}！")
         else:
             yield event.plain_result(f"{name} 当前未在游戏中。")
 
@@ -569,7 +607,8 @@ class SteamWatchPlugin(Star):
         name = player.get("personaname", steamid)
         playing = "gameid" in player or "gameextrainfo" in player
         game_name = player.get("gameextrainfo")
-        appid = player.get("gameid")
+        appid = _safe_int(player.get("gameid"))
+        display_name = await self._get_localized_game_name(appid, game_name or "某个游戏")
         friend_code = _account_id_from_steamid64(int(steamid))
         lines = [f"昵称：{name}", f"好友码：{friend_code}", f"SteamID64：{steamid}"]
         persona_state = PERSONA_STATE_TEXT.get(player.get("personastate"))
@@ -594,10 +633,11 @@ class SteamWatchPlugin(Star):
             parts = [str(x) for x in (country, state, city) if x]
             lines.append(f"地区：{'-'.join(parts)}")
         if playing:
-            lines.append(f"正在玩：{game_name or '某个游戏'} (appid: {appid})！")
+            appid_text = appid if appid is not None else "未知"
+            lines.append(f"正在玩：{display_name} (appid: {appid_text})！")
         else:
             lines.append("当前未在游戏中。")
-        if appid:
+        if appid is not None:
             playtime = await self._fetch_game_playtime(api_key, steamid, int(appid))
             if playtime is not None:
                 lines.append(f"游戏总时长：{playtime} 小时")
@@ -630,8 +670,10 @@ class SteamWatchPlugin(Star):
         name = player.get("personaname", steamid)
         playing = "gameid" in player or "gameextrainfo" in player
         game_name = player.get("gameextrainfo")
+        appid = _safe_int(player.get("gameid"))
+        display_name = await self._get_localized_game_name(appid, game_name or "某个游戏")
         if playing:
-            await self._notify_by_steamid(steamid, f"{name} 正在玩 {game_name or '某个游戏'}！")
+            await self._notify_by_steamid(steamid, f"{name} 正在玩 {display_name}！")
         else:
             await self._notify_by_steamid(steamid, f"{name} 当前未在游戏中。")
         yield event.plain_result("已推送当前状态。")
@@ -708,6 +750,18 @@ class SteamWatchPlugin(Star):
         extra = ""
         if bool(self.config.get("show_csgo_friend_code", False)):
             extra = f"（CS:GO 好友码：{csgo_code}）"
+        # 可选：当未设置管理员列表时，绑定即自动加入监控
+        if self._auto_add_on_bind():
+            steamids = self._get_steamids()
+            if steamid not in steamids:
+                steamids.append(steamid)
+                self._set_steamids(steamids)
+            if self._group_enabled():
+                group = self._get_current_sub_group(event)
+                if group:
+                    groups = self._get_steamid_groups()
+                    groups[steamid] = group
+                    self._set_steamid_groups(groups)
         yield event.plain_result(f"已绑定：{user_key} -> {friend_code}（64ID：{steamid}）{extra}")
 
     async def _cmd_unbind(self, event: AstrMessageEvent, args: List[str]):
@@ -744,15 +798,16 @@ class SteamWatchPlugin(Star):
     async def _menu_text(self, event: AstrMessageEvent):
         lines = [
             "========== SteamWatch 菜单 ==========",
-            "简化指令：/sw <子命令>",
-            "",
-            "管理：/sw add|remove|list|interval",
-            "通知：/sw sub|unsub [group] | subinfo | groupinfo | subclean",
-            "查询：/sw query|status|info|resolve",
-            "网络：/sw test|proxytest",
-            "绑定：/sw bind|unbind|me",
-            "",
-            "示例：/sw add 7656119xxxxxxxxxx",
+            "简化入口：/sw <模块>",
+            "模块列表：manage / notify / query / bind / net",
+            "--------------------------------------",
+            "【管理】/sw manage  - 监控列表与轮询",
+            "【通知】/sw notify  - 订阅/分组/清理",
+            "【查询】/sw query   - 查询/解析/状态",
+            "【绑定】/sw bind    - 绑定/解绑/我的",
+            "【网络】/sw net     - 连通性测试",
+            "--------------------------------------",
+            "示例：/sw notify",
             "完整命令：/steamwatch_menu",
         ]
         yield event.plain_result("\n".join(lines))
@@ -792,6 +847,56 @@ class SteamWatchPlugin(Star):
             "/steamwatch_menu",
         ]
         yield event.plain_result("\n".join(lines))
+
+    def _menu_manage(self) -> str:
+        return "\n".join([
+            "【管理模块】",
+            "----------------------",
+            "/sw add <steamid|profile|vanity|friend_code|me> [group]  添加监控",
+            "/sw remove <steamid|profile|vanity|friend_code|me>       移除监控",
+            "/sw list                                       查看监控列表",
+            "/sw interval <seconds>  (>=30)                 设置轮询间隔",
+        ])
+
+    def _menu_notify(self) -> str:
+        return "\n".join([
+            "【通知模块】",
+            "----------------------",
+            "/sw sub [group]         订阅当前会话（可选分组）",
+            "/sw unsub [group]       取消订阅",
+            "/sw subinfo             查看当前会话订阅信息",
+            "/sw groupinfo [group]   查看分组订阅详情",
+            "/sw grouplist           查看分组订阅列表",
+            "/sw subclean            清理无效订阅(管理员)",
+            "提示：启用 notify_group_enabled 后，分组订阅才会生效",
+        ])
+
+    def _menu_query(self) -> str:
+        return "\n".join([
+            "【查询模块】",
+            "----------------------",
+            "/sw query <steamid|profile|vanity|friend_code|me>   快速查询",
+            "/sw info  <steamid|profile|vanity|friend_code|me>   详细信息",
+            "/sw status <steamid|profile|vanity|friend_code|me>  推送当前状态",
+            "/sw resolve <steamid|profile|vanity|friend_code|me> 解析为 SteamID64",
+        ])
+
+    def _menu_bind(self) -> str:
+        return "\n".join([
+            "【绑定模块】",
+            "----------------------",
+            "/sw bind <steamid|profile|vanity|friend_code>  绑定自己",
+            "/sw unbind [user_id]                           解绑(可指定用户)",
+            "/sw me                                         查看我的绑定",
+        ])
+
+    def _menu_net(self) -> str:
+        return "\n".join([
+            "【网络模块】",
+            "----------------------",
+            "/sw test       测试 Steam API 连通性",
+            "/sw proxytest  测试代理是否生效",
+        ])
 
     # ------------------------
     # Core logic
@@ -833,26 +938,34 @@ class SteamWatchPlugin(Star):
                 continue
             playing = "gameid" in player or "gameextrainfo" in player
             game_name = player.get("gameextrainfo")
+            appid = _safe_int(player.get("gameid"))
+            display_name = await self._get_localized_game_name(appid, game_name or "某个游戏")
             if steamid not in self._last_state:
-                self._last_state[steamid] = (playing, game_name)
+                self._last_state[steamid] = (playing, game_name, str(appid) if appid is not None else None)
                 if playing:
                     self._session_start[steamid] = time.time()
                 continue
-            last_playing, last_game = self._last_state[steamid]
+            last_playing, last_game, last_appid = self._last_state[steamid]
             if playing and not last_playing:
                 self._session_start[steamid] = time.time()
                 await self._notify_by_steamid(
                     steamid,
-                    f"{player.get('personaname', steamid)} 正在玩 {game_name or '某个游戏'}！",
+                    f"{player.get('personaname', steamid)} 正在玩 {display_name}！",
                 )
             elif notify_on_stop and last_playing and not playing:
                 duration_min = self._consume_session_minutes(steamid)
                 taunt = _playtime_taunt(duration_min)
+                last_appid_int = _safe_int(last_appid)
+                last_display = await self._get_localized_game_name(last_appid_int, last_game or "某个游戏")
                 await self._notify_by_steamid(
                     steamid,
-                    f"{player.get('personaname', steamid)} 已停止游戏 {last_game or '某个游戏'}。本次游玩 {duration_min} 分钟，评价：{taunt}",
+                    (
+                        f"{player.get('personaname', steamid)} 已停止游戏 {last_display}。"
+                        f"本次游玩 {duration_min} 分钟。\n"
+                        f"评价：{taunt}"
+                    ),
                 )
-            self._last_state[steamid] = (playing, game_name)
+            self._last_state[steamid] = (playing, game_name, str(appid) if appid is not None else None)
 
     async def _fetch_player_summaries(self, api_key: str, steamids: List[str]):
         url = "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/"
@@ -926,6 +1039,37 @@ class SteamWatchPlugin(Star):
         minutes = games[0].get("playtime_forever", 0)
         return max(0, int(minutes // 60))
 
+    async def _get_localized_game_name(self, appid: Optional[int], fallback: str) -> str:
+        if not appid:
+            return fallback
+        if not bool(self.config.get("use_localized_game_name", False)):
+            return fallback
+        lang = str(self.config.get("game_name_language", "schinese")).strip() or "schinese"
+        ttl = int(self.config.get("game_name_cache_ttl_sec", 86400))
+        now = time.time()
+        cache_key = f"{appid}:{lang}"
+        cached = self._app_name_cache.get(cache_key)
+        if cached and now - cached[1] < ttl:
+            return cached[0]
+        url = "https://store.steampowered.com/api/appdetails"
+        params = {"appids": str(appid), "l": lang}
+        timeout_sec = int(self.config.get("request_timeout_sec", 10))
+        try:
+            async with self._create_http_client(timeout_sec, follow_redirects=True) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception:
+            return fallback
+        item = data.get(str(appid), {})
+        if isinstance(item, dict) and item.get("success"):
+            info = item.get("data", {})
+            name = info.get("name")
+            if isinstance(name, str) and name.strip():
+                self._app_name_cache[cache_key] = (name.strip(), now)
+                return name.strip()
+        return fallback
+
     async def _fetch_achievements(self, api_key: str, steamid: str, appid: int) -> Optional[str]:
         url = "https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v0001/"
         params = {"key": api_key, "steamid": steamid, "appid": appid}
@@ -958,7 +1102,8 @@ class SteamWatchPlugin(Star):
             group = steamid_groups.get(steamid, "")
             if group and group in groups and groups[group]:
                 await self._notify_to_targets(text, groups[group])
-                return
+            # 分群订阅启用时，不回退到全局通知
+            return
         await self._notify(text)
 
     async def _notify_to_targets(self, text: str, targets: List[str]):
@@ -983,6 +1128,19 @@ class SteamWatchPlugin(Star):
             return "OtherMessage"
         return text
 
+    def _is_valid_target(self, target: str) -> bool:
+        if not target or target.count(":") < 2:
+            return False
+        parts = target.split(":", 2)
+        if len(parts) != 3:
+            return False
+        msg_type = parts[1]
+        try:
+            MessageType(msg_type)
+        except Exception:
+            return False
+        return True
+
     def _normalize_target(self, target: str) -> Optional[str]:
         if not target:
             return None
@@ -992,13 +1150,16 @@ class SteamWatchPlugin(Star):
         )
         parts = target.split(":", 2)
         if len(parts) == 1:
-            return f"{default_platform}:{default_msg_type}:{parts[0]}"
+            normalized = f"{default_platform}:{default_msg_type}:{parts[0]}"
+            return normalized if self._is_valid_target(normalized) else None
         if len(parts) == 2:
             msg_type = self._normalize_message_type(parts[0])
-            return f"{default_platform}:{msg_type}:{parts[1]}"
+            normalized = f"{default_platform}:{msg_type}:{parts[1]}"
+            return normalized if self._is_valid_target(normalized) else None
         if len(parts) == 3:
             parts[1] = self._normalize_message_type(parts[1])
-            return ":".join(parts)
+            normalized = ":".join(parts)
+            return normalized if self._is_valid_target(normalized) else None
         return None
 
     def _normalize_notify_config(self) -> None:
@@ -1129,6 +1290,14 @@ class SteamWatchPlugin(Star):
                 groups[group].append(normalized)
         return groups
 
+    def _get_current_sub_group(self, event: AstrMessageEvent) -> str:
+        target = event.unified_msg_origin
+        groups = self._get_notify_groups()
+        matched = [g for g, targets in groups.items() if target in targets]
+        if len(matched) == 1:
+            return matched[0]
+        return ""
+
     def _set_notify_groups(self, groups: Dict[str, List[str]]):
         items: List[str] = []
         for group, targets in groups.items():
@@ -1150,6 +1319,9 @@ class SteamWatchPlugin(Star):
                 groups[sid] = group
         return groups
 
+    def _auto_add_on_bind(self) -> bool:
+        return bool(self.config.get("auto_add_on_bind_when_no_admin", False))
+
     def _set_steamid_groups(self, groups: Dict[str, str]):
         items = [f"{sid}:{group}" for sid, group in groups.items()]
         self.config["steamid_groups"] = items
@@ -1158,10 +1330,12 @@ class SteamWatchPlugin(Star):
     def _split_args(self, text: str) -> List[str]:
         if not text:
             return []
+        text = text.replace("\u3000", " ").strip()
         try:
-            return shlex.split(text)
+            parts = shlex.split(text)
         except ValueError:
-            return text.split()
+            parts = text.split()
+        return [p for p in parts if p]
 
     def _get_event_text(self, event: AstrMessageEvent) -> str:
         """Best-effort plain text extraction."""
@@ -1356,6 +1530,15 @@ class SteamWatchPlugin(Star):
 def _chunk_list(items: List[str], size: int):
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+def _safe_int(value: Optional[str]) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
 
 
 def _extract_at_user_id(text: str) -> Optional[str]:

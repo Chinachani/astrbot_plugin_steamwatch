@@ -44,6 +44,21 @@
     "description": "是否在绑定/解析中额外显示 CS:GO 好友码",
     "default": false
   },
+  "use_localized_game_name": {
+    "type": "bool",
+    "description": "是否尝试获取游戏中文名（通过 Steam 商店 API）",
+    "default": false
+  },
+  "game_name_language": {
+    "type": "string",
+    "description": "游戏名语言（默认 schinese）",
+    "default": "schinese"
+  },
+  "game_name_cache_ttl_sec": {
+    "type": "int",
+    "description": "游戏名缓存有效期（秒）",
+    "default": 86400
+  },
   "steamids": {
     "type": "list",
     "description": "需要监控的 SteamID64 列表",
@@ -63,6 +78,11 @@
     "type": "list",
     "description": "管理员用户ID列表（为空则不限制敏感指令）",
     "default": []
+  },
+  "auto_add_on_bind_when_no_admin": {
+    "type": "bool",
+    "description": "当管理员列表为空时，绑定自动加入监控",
+    "default": false
   },
   "notify_targets": {
     "type": "list",
