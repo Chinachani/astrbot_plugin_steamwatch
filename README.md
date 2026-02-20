@@ -28,6 +28,19 @@
 - `request_retry_delay_sec`：重试间隔（秒）
 - `proxy_url`：代理地址（可选，例如 http://127.0.0.1:7890）
 - `debug_log`：是否开启调试日志
+- `render_as_image`：是否将查询/通知文本渲染为图片发送
+- `render_image_in_notify`：轮询通知是否也发送图片（关闭则仅查询类发送图片）
+- `image_prefer_game_bg`：背景优先级（`true` 优先游戏背景，`false` 优先默认背景）
+- `image_default_bg_url`：默认背景图 URL（不在游戏时优先使用）
+- `image_width` / `image_height`：图片尺寸
+- `image_padding` / `image_font_size` / `image_line_spacing`：图片文本布局
+- `image_overlay_alpha`：遮罩透明度（0-255）
+- `image_text_color`：文字颜色（HEX）
+- `image_font_path`：自定义字体路径（可留空）
+- `image_auto_download_font`：系统字体不可用时自动下载中文字体
+- `image_font_dir`：字体下载目录
+- `image_card_alpha` / `image_card_blur`：磨砂卡片透明度与模糊强度
+- `image_card_padding` / `image_card_margin`：磨砂卡片内外边距
 - `verify_ssl`：是否校验证书（关闭可绕过 CERTIFICATE_VERIFY_FAILED）
 - `show_csgo_friend_code`：是否在绑定/解析中额外显示 CS:GO 好友码
 - `use_localized_game_name`：是否尝试获取游戏中文名（Steam 商店 API）
@@ -49,7 +62,7 @@
 - `/sw groupinfo [group]` 查看分组订阅详情
 - `/sw grouplist` 查看分组订阅列表
 - `/sw resolve|query|status|info`
-- `/sw test|proxytest`
+- `/sw test|proxytest|font|preset`
 - `/sw bind|unbind|me`
 
 说明：当 `admin_user_ids` 配置不为空时，以下指令仅管理员可用：添加/移除监控、查看列表、设置轮询、订阅/取消订阅通知。
@@ -101,6 +114,8 @@
 - `/steamwatch_info <steamid64|profile_url|vanity|friend_code|me>` 查询更多信息（成就/时长等）
 - `/steamwatch_test` 测试 Steam/Steam Web API 访问
 - `/steamwatch_proxytest` 测试代理是否生效
+- `/steamwatch_font` 图片字体下载/设置管理
+- `/steamwatch_preset` 一键应用推荐图片配置（管理员）
 - `/steamwatch_status <steamid64|profile_url|vanity|friend_code|me>` 推送当前状态
 - `/steamwatch_bind <steamid64|profile_url|vanity|friend_code>` 绑定自己的 SteamID
 - `/steamwatch_unbind [user_id]` 解除绑定（可选参数仅管理员）
@@ -158,3 +173,30 @@
 
 ### v1.1.11
 - 管理员列表为空时可选“绑定即加入监控”
+
+### v1.1.12
+- 轮询稳定性增强：单个 SteamID 处理异常不再影响整轮轮询
+- 网络异常日志增强：重试/失败日志包含异常类型与详细信息，便于定位超时与连接问题
+- 请求容错优化：当全部分片请求失败时返回 `None`，避免误判为空结果
+- 配置写入改为安全封装，降低保存失败对主流程的影响
+- 连通性与代理测试的错误提示统一为“异常类型 + 详细错误”
+
+### v1.2.0
+- 新增“文本转图片”发送能力：用于查询结果与轮询通知
+- 背景图支持优先级开关：可选优先游戏头图或默认背景
+- 不在游戏时可使用默认背景图；背景加载失败时自动回退纯色底图
+- 增加图片渲染配置项（尺寸、字体、边距、遮罩、颜色等）
+
+### v1.2.1
+- 新增字体指令：`/sw font dl [url] [filename]`、`/sw font set <path>`、`/sw font clear`
+- 支持自动下载中文字体（可开关），解决图片中文字体缺失问题
+- 轮询“停止游戏”通知改为同样优先使用游戏头图（若存在 appid）
+- 图片文字改为磨砂卡片承载，提升复杂背景下的可读性
+- 图片相关配置默认值调整为推荐参数（默认开启图片输出）
+
+### v1.2.2
+- 新增推荐配置指令：`/sw preset`（兼容 `/steamwatch_preset`）
+- 一键写入图片推荐参数（渲染开关、卡片样式、字体自动下载等）
+- 下载字体举例 /sw font dl 下载链接 本地名称
+- 例图中的字体下载地址 [坊宋字体](https://raw.githubusercontent.com/dengcao/free-fonts/refs/heads/main/%E5%85%8D%E8%B4%B9%E5%95%86%E7%94%A8%E5%AD%97%E4%BD%93%EF%BC%88%E5%85%B11328%E6%AC%BE%2C1328%20free%20commercial%20fonts%EF%BC%89/%E4%B8%AD%E6%96%87%E5%AD%97%E4%BD%93%EF%BC%88%E5%85%B1348%E6%AC%BE%EF%BC%8C348%20Chinese%20fonts%EF%BC%89/%E5%9D%8A%E5%AE%8B%E5%AD%97%E4%BD%93.ttf)
+- 如下载失败可使用GitHub加速镜像链接下载[加速地址_坊宋字体](https://gh.llkk.cc/https://raw.githubusercontent.com/dengcao/free-fonts/refs/heads/main/%E5%85%8D%E8%B4%B9%E5%95%86%E7%94%A8%E5%AD%97%E4%BD%93%EF%BC%88%E5%85%B11328%E6%AC%BE%2C1328%20free%20commercial%20fonts%EF%BC%89/%E4%B8%AD%E6%96%87%E5%AD%97%E4%BD%93%EF%BC%88%E5%85%B1348%E6%AC%BE%EF%BC%8C348%20Chinese%20fonts%EF%BC%89/%E5%9D%8A%E5%AE%8B%E5%AD%97%E4%BD%93.ttf)

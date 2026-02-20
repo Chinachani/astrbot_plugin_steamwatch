@@ -1,12 +1,16 @@
 import asyncio
+import contextlib
 import hashlib
 from datetime import datetime
+import tempfile
+from pathlib import Path
 import re
 import shlex
 import time
 from typing import Dict, List, Optional, Tuple
 
 import httpx
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, register
@@ -28,12 +32,24 @@ PERSONA_STATE_TEXT = {
     6: "想玩",
 }
 
+DEFAULT_POLL_INTERVAL_SEC = 60
+MIN_POLL_INTERVAL_SEC = 5
+DEFAULT_REQUEST_TIMEOUT_SEC = 10
+DEFAULT_REQUEST_RETRIES = 2
+DEFAULT_REQUEST_RETRY_DELAY_SEC = 2.0
+STEAM_SUMMARY_BATCH_SIZE = 100
+DEFAULT_IMAGE_SIZE = (1080, 608)
+DEFAULT_BG_COLOR = "#10141A"
+DEFAULT_TEXT_COLOR = "#F2F5F8"
+DEFAULT_STEAM_BG_URL = "https://cdn.cloudflare.steamstatic.com/store/home/store_home_share.jpg"
+DEFAULT_FONT_URL = "https://github.com/notofonts/noto-cjk/raw/main/Sans/Variable/TTF/NotoSansCJKsc-VF.ttf"
+
 
 @register(
     "astrbot_plugin_steamwatch",
     "Chinachani",
     "通过astrbot视奸你的steam好友！",
-    "1.1.11",
+    "1.2.2",
     "https://github.com/Chinachani/astrbot_plugin_steamwatch",
 )
 class SteamWatchPlugin(Star):
@@ -46,6 +62,7 @@ class SteamWatchPlugin(Star):
         self._last_state: Dict[str, Tuple[bool, Optional[str], Optional[str]]] = {}
         self._session_start: Dict[str, float] = {}
         self._app_name_cache: Dict[str, Tuple[str, float]] = {}
+        self._font_download_task: Optional[asyncio.Task] = None
 
     # ------------------------
     # Short command入口
@@ -153,6 +170,14 @@ class SteamWatchPlugin(Star):
             async for item in self._cmd_proxytest(event):
                 yield item
             return
+        if action in {"preset", "recommend", "recommended"}:
+            async for item in self._cmd_apply_recommended_preset(event):
+                yield item
+            return
+        if action in {"font", "fontdl", "fontset"}:
+            async for item in self._cmd_font(event, rest):
+                yield item
+            return
         if action in {"bind"}:
             async for item in self._cmd_bind(event, rest):
                 yield item
@@ -244,6 +269,17 @@ class SteamWatchPlugin(Star):
     @filter.command("steamwatch_proxytest")
     async def proxy_test(self, event: AstrMessageEvent):
         async for item in self._cmd_proxytest(event):
+            yield item
+
+    @filter.command("steamwatch_preset")
+    async def preset(self, event: AstrMessageEvent):
+        async for item in self._cmd_apply_recommended_preset(event):
+            yield item
+
+    @filter.command("steamwatch_font")
+    async def font_manage(self, event: AstrMessageEvent, args: str = ""):
+        tokens = self._split_args(args or self._extract_args_from_event(event, "steamwatch_font"))
+        async for item in self._cmd_font(event, tokens):
             yield item
 
     @filter.command("steamwatch_status")
@@ -415,7 +451,7 @@ class SteamWatchPlugin(Star):
             yield event.plain_result("轮询间隔需 >= 30 秒。")
             return
         self.config["poll_interval_sec"] = value
-        self.config.save_config()
+        self._save_config_safe()
         yield event.plain_result(f"轮询间隔已设置为 {value} 秒。")
 
     async def _cmd_subscribe(self, event: AstrMessageEvent):
@@ -579,9 +615,21 @@ class SteamWatchPlugin(Star):
         appid = _safe_int(player.get("gameid"))
         display_name = await self._get_localized_game_name(appid, game_name or "某个游戏")
         if playing:
-            yield event.plain_result(f"{name} 正在玩 {display_name}！")
+            yield await self._build_event_result(
+                event,
+                f"{name} 正在玩 {display_name}！",
+                appid=appid,
+                avatar_url=str(player.get("avatarfull", "")),
+                is_playing=True,
+            )
         else:
-            yield event.plain_result(f"{name} 当前未在游戏中。")
+            yield await self._build_event_result(
+                event,
+                f"{name} 当前未在游戏中。",
+                appid=appid,
+                avatar_url=str(player.get("avatarfull", "")),
+                is_playing=False,
+            )
 
     async def _cmd_info(self, event: AstrMessageEvent, args: List[str]):
         target = self._extract_target_or_at(event, args)
@@ -644,7 +692,13 @@ class SteamWatchPlugin(Star):
             achv = await self._fetch_achievements(api_key, steamid, int(appid))
             if achv:
                 lines.append(f"成就进度：{achv}")
-        yield event.plain_result("\n".join(lines))
+        yield await self._build_event_result(
+            event,
+            "\n".join(lines),
+            appid=appid,
+            avatar_url=str(player.get("avatarfull", "")),
+            is_playing=playing,
+        )
 
     async def _cmd_status(self, event: AstrMessageEvent, args: List[str]):
         target = self._extract_target_or_at(event, args)
@@ -673,26 +727,38 @@ class SteamWatchPlugin(Star):
         appid = _safe_int(player.get("gameid"))
         display_name = await self._get_localized_game_name(appid, game_name or "某个游戏")
         if playing:
-            await self._notify_by_steamid(steamid, f"{name} 正在玩 {display_name}！")
+            await self._notify_by_steamid(
+                steamid,
+                f"{name} 正在玩 {display_name}！",
+                appid=appid,
+                avatar_url=str(player.get("avatarfull", "")),
+                is_playing=True,
+            )
         else:
-            await self._notify_by_steamid(steamid, f"{name} 当前未在游戏中。")
+            await self._notify_by_steamid(
+                steamid,
+                f"{name} 当前未在游戏中。",
+                appid=appid,
+                avatar_url=str(player.get("avatarfull", "")),
+                is_playing=False,
+            )
         yield event.plain_result("已推送当前状态。")
 
     async def _cmd_test(self, event: AstrMessageEvent):
-        timeout_sec = int(self.config.get("request_timeout_sec", 10))
+        timeout_sec = int(self.config.get("request_timeout_sec", DEFAULT_REQUEST_TIMEOUT_SEC))
         results = []
         proxy_url = self._get_proxy_url()
         async with self._create_http_client(timeout_sec, follow_redirects=True) as client:
             try:
                 resp = await client.get("https://steamcommunity.com")
                 results.append(f"steamcommunity.com: {resp.status_code}")
-            except Exception as exc:
-                results.append(f"steamcommunity.com: 失败 ({type(exc).__name__})")
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError, ValueError) as exc:
+                results.append(f"steamcommunity.com: 失败（{self._format_net_error(exc)}）")
             try:
                 resp = await client.get("https://api.steampowered.com/ISteamWebAPIUtil/GetSupportedAPIList/v1/")
                 results.append(f"api.steampowered.com: {resp.status_code}")
-            except Exception as exc:
-                results.append(f"api.steampowered.com: 失败 ({type(exc).__name__})")
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError, ValueError) as exc:
+                results.append(f"api.steampowered.com: 失败（{self._format_net_error(exc)}）")
         results.append(f"代理：{proxy_url or '未配置'}")
         yield event.plain_result("连通性测试结果：\n" + "\n".join(results))
 
@@ -701,22 +767,100 @@ class SteamWatchPlugin(Star):
         if not proxy_url:
             yield event.plain_result("未配置代理（proxy_url）。")
             return
-        timeout_sec = int(self.config.get("request_timeout_sec", 10))
+        timeout_sec = int(self.config.get("request_timeout_sec", DEFAULT_REQUEST_TIMEOUT_SEC))
         results = []
         try:
             async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=True) as client:
                 resp = await client.get("https://api.ipify.org?format=json")
                 results.append(f"直连IP：{resp.json().get('ip', '未知')}")
-        except Exception as exc:
-            results.append(f"直连IP：失败 ({type(exc).__name__})")
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError, ValueError) as exc:
+            results.append(f"直连IP：失败（{self._format_net_error(exc)}）")
         try:
             async with self._create_http_client(timeout_sec, follow_redirects=True) as client:
                 resp = await client.get("https://api.ipify.org?format=json")
                 results.append(f"代理IP：{resp.json().get('ip', '未知')}")
-        except Exception as exc:
-            results.append(f"代理IP：失败 ({type(exc).__name__})")
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError, ValueError) as exc:
+            results.append(f"代理IP：失败（{self._format_net_error(exc)}）")
         results.append(f"代理地址：{proxy_url}")
         yield event.plain_result("代理测试结果：\n" + "\n".join(results))
+
+    async def _cmd_apply_recommended_preset(self, event: AstrMessageEvent):
+        deny = self._require_admin(event)
+        if deny:
+            yield event.plain_result(deny)
+            return
+        self.config["render_as_image"] = True
+        self.config["render_image_in_notify"] = True
+        self.config["image_prefer_game_bg"] = True
+        self.config["image_width"] = 1080
+        self.config["image_height"] = 608
+        self.config["image_padding"] = 44
+        self.config["image_font_size"] = 30
+        self.config["image_line_spacing"] = 10
+        self.config["image_overlay_alpha"] = 145
+        self.config["image_card_alpha"] = 160
+        self.config["image_card_blur"] = 12
+        self.config["image_card_padding"] = 28
+        self.config["image_card_margin"] = 44
+        self.config["image_auto_download_font"] = True
+        self._save_config_safe()
+        yield event.plain_result(
+            "已应用推荐配置：图片输出、游戏头图优先、磨砂卡片与中文字体自动下载。"
+        )
+
+    async def _cmd_font(self, event: AstrMessageEvent, args: List[str]):
+        if not args:
+            current = str(self.config.get("image_font_path", "")).strip() or "未设置（自动选择系统字体）"
+            yield event.plain_result(
+                "\n".join(
+                    [
+                        f"当前图片字体：{current}",
+                        "用法：",
+                        "/sw font dl [url] [filename]  下载字体并设为当前字体",
+                        "/sw font set <path>           指定本地字体文件",
+                        "/sw font clear                清空字体配置（回退系统字体）",
+                    ]
+                )
+            )
+            return
+        action = args[0].lower()
+        if action in {"clear", "reset"}:
+            self.config["image_font_path"] = ""
+            self._save_config_safe()
+            yield event.plain_result("已清空字体路径配置，将自动使用系统字体。")
+            return
+        if action in {"set", "use"}:
+            if len(args) < 2:
+                yield event.plain_result("用法：/sw font set <path>")
+                return
+            path = " ".join(args[1:]).strip().strip("\"'")
+            if not Path(path).exists():
+                yield event.plain_result(f"字体文件不存在：{path}")
+                return
+            self.config["image_font_path"] = path
+            self._save_config_safe()
+            yield event.plain_result(f"字体已切换：{path}")
+            return
+        if action in {"dl", "download"}:
+            url = DEFAULT_FONT_URL
+            filename = ""
+            if len(args) >= 2:
+                if args[1].startswith("http://") or args[1].startswith("https://"):
+                    url = args[1]
+                    if len(args) >= 3:
+                        filename = args[2]
+                else:
+                    filename = args[1]
+            yield event.plain_result("开始下载字体，稍等一下…")
+            save_path, err = await self._download_font(url, filename)
+            if err:
+                yield event.plain_result(f"字体下载失败：{err}")
+                return
+            self.config["image_font_path"] = save_path
+            self._save_config_safe()
+            yield event.plain_result(f"字体下载成功并已启用：{save_path}")
+            return
+        yield event.plain_result("未知参数。用法：/sw font dl [url] [filename] | /sw font set <path> | /sw font clear")
 
     async def _cmd_bind(self, event: AstrMessageEvent, args: List[str]):
         if not args:
@@ -896,6 +1040,8 @@ class SteamWatchPlugin(Star):
             "----------------------",
             "/sw test       测试 Steam API 连通性",
             "/sw proxytest  测试代理是否生效",
+            "/sw font ...   下载/切换图片字体",
+            "/sw preset     一键应用推荐图片配置(管理员)",
         ])
 
     # ------------------------
@@ -905,6 +1051,12 @@ class SteamWatchPlugin(Star):
         self._stop_event.set()
         if self._task:
             self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+        if self._font_download_task and not self._font_download_task.done():
+            self._font_download_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._font_download_task
 
     async def _poll_loop(self):
         while not self._stop_event.is_set():
@@ -914,7 +1066,7 @@ class SteamWatchPlugin(Star):
                 break
             except Exception:
                 logger.exception("steamwatch poll loop error")
-            interval = int(self.config.get("poll_interval_sec", 60))
+            interval = max(MIN_POLL_INTERVAL_SEC, int(self.config.get("poll_interval_sec", DEFAULT_POLL_INTERVAL_SEC)))
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -933,49 +1085,59 @@ class SteamWatchPlugin(Star):
             return
         notify_on_stop = bool(self.config.get("notify_on_stop", False))
         for steamid in steamids:
-            player = summaries.get(steamid)
-            if not player:
-                continue
-            playing = "gameid" in player or "gameextrainfo" in player
-            game_name = player.get("gameextrainfo")
-            appid = _safe_int(player.get("gameid"))
-            display_name = await self._get_localized_game_name(appid, game_name or "某个游戏")
-            if steamid not in self._last_state:
-                self._last_state[steamid] = (playing, game_name, str(appid) if appid is not None else None)
-                if playing:
+            try:
+                player = summaries.get(steamid)
+                if not player:
+                    continue
+                playing = "gameid" in player or "gameextrainfo" in player
+                game_name = player.get("gameextrainfo")
+                appid = _safe_int(player.get("gameid"))
+                display_name = await self._get_localized_game_name(appid, game_name or "某个游戏")
+                if steamid not in self._last_state:
+                    self._last_state[steamid] = (playing, game_name, str(appid) if appid is not None else None)
+                    if playing:
+                        self._session_start[steamid] = time.time()
+                    continue
+                last_playing, last_game, last_appid = self._last_state[steamid]
+                if playing and not last_playing:
                     self._session_start[steamid] = time.time()
-                continue
-            last_playing, last_game, last_appid = self._last_state[steamid]
-            if playing and not last_playing:
-                self._session_start[steamid] = time.time()
-                await self._notify_by_steamid(
-                    steamid,
-                    f"{player.get('personaname', steamid)} 正在玩 {display_name}！",
-                )
-            elif notify_on_stop and last_playing and not playing:
-                duration_min = self._consume_session_minutes(steamid)
-                taunt = _playtime_taunt(duration_min)
-                last_appid_int = _safe_int(last_appid)
-                last_display = await self._get_localized_game_name(last_appid_int, last_game or "某个游戏")
-                await self._notify_by_steamid(
-                    steamid,
-                    (
-                        f"{player.get('personaname', steamid)} 已停止游戏 {last_display}。"
-                        f"本次游玩 {duration_min} 分钟。\n"
-                        f"评价：{taunt}"
-                    ),
-                )
-            self._last_state[steamid] = (playing, game_name, str(appid) if appid is not None else None)
+                    await self._notify_by_steamid(
+                        steamid,
+                        f"{player.get('personaname', steamid)} 正在玩 {display_name}！",
+                        appid=appid,
+                        avatar_url=str(player.get("avatarfull", "")),
+                        is_playing=True,
+                    )
+                elif notify_on_stop and last_playing and not playing:
+                    duration_min = self._consume_session_minutes(steamid)
+                    taunt = _playtime_taunt(duration_min)
+                    last_appid_int = _safe_int(last_appid)
+                    last_display = await self._get_localized_game_name(last_appid_int, last_game or "某个游戏")
+                    await self._notify_by_steamid(
+                        steamid,
+                        (
+                            f"{player.get('personaname', steamid)} 已停止游戏 {last_display}。"
+                            f"本次游玩 {duration_min} 分钟。\n"
+                            f"评价：{taunt}"
+                        ),
+                        appid=last_appid_int,
+                        avatar_url=str(player.get("avatarfull", "")),
+                        is_playing=False,
+                    )
+                self._last_state[steamid] = (playing, game_name, str(appid) if appid is not None else None)
+            except Exception:
+                logger.exception("steamwatch poll target failed: steamid=%s", steamid)
 
     async def _fetch_player_summaries(self, api_key: str, steamids: List[str]):
         url = "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/"
         summaries: Dict[str, dict] = {}
-        timeout_sec = int(self.config.get("request_timeout_sec", 10))
-        retries = int(self.config.get("request_retries", 2))
-        retry_delay = float(self.config.get("request_retry_delay_sec", 2.0))
+        timeout_sec = int(self.config.get("request_timeout_sec", DEFAULT_REQUEST_TIMEOUT_SEC))
+        retries = int(self.config.get("request_retries", DEFAULT_REQUEST_RETRIES))
+        retry_delay = float(self.config.get("request_retry_delay_sec", DEFAULT_REQUEST_RETRY_DELAY_SEC))
         debug_log = bool(self.config.get("debug_log", False))
+        any_success = False
         async with self._create_http_client(timeout_sec) as client:
-            for chunk in _chunk_list(steamids, 100):
+            for chunk in _chunk_list(steamids, STEAM_SUMMARY_BATCH_SIZE):
                 params = {
                     "key": api_key,
                     "steamids": ",".join(chunk),
@@ -994,20 +1156,36 @@ class SteamWatchPlugin(Star):
                     try:
                         resp = await client.get(url, params=params)
                         resp.raise_for_status()
+                        any_success = True
                         break
                     except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
                         if attempt >= retries:
-                            logger.warning("steamwatch request failed after %s retries: %s", retries, exc)
+                            logger.warning(
+                                "steamwatch request failed after %s retries: %s: %r",
+                                retries,
+                                exc.__class__.__name__,
+                                exc,
+                            )
                             resp = None
                             break
                         if debug_log:
-                            logger.info("steamwatch retry %s/%s after error: %s", attempt + 1, retries, exc)
+                            logger.info(
+                                "steamwatch retry %s/%s after error: %s: %r",
+                                attempt + 1,
+                                retries,
+                                exc.__class__.__name__,
+                                exc,
+                            )
                         await asyncio.sleep(retry_delay)
                 if resp is None:
                     continue
                 if debug_log:
                     logger.info("steamwatch response status=%s", resp.status_code)
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except ValueError as exc:
+                    logger.warning("steamwatch response json decode failed: %r", exc)
+                    continue
                 players = data.get("response", {}).get("players", [])
                 if debug_log:
                     logger.info("steamwatch players=%s", len(players))
@@ -1015,6 +1193,8 @@ class SteamWatchPlugin(Star):
                     sid = player.get("steamid")
                     if sid:
                         summaries[sid] = player
+        if not any_success:
+            return None
         return summaries
 
     async def _fetch_game_playtime(self, api_key: str, steamid: str, appid: int) -> Optional[int]:
@@ -1027,11 +1207,13 @@ class SteamWatchPlugin(Star):
             "appids_filter[0]": appid,
         }
         try:
-            async with self._create_http_client(10) as client:
+            async with self._create_http_client(DEFAULT_REQUEST_TIMEOUT_SEC) as client:
                 resp = await client.get(url, params=params)
                 resp.raise_for_status()
                 data = resp.json()
-        except Exception:
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError, ValueError) as exc:
+            if bool(self.config.get("debug_log", False)):
+                logger.info("steamwatch fetch playtime failed: %s", self._format_net_error(exc))
             return None
         games = data.get("response", {}).get("games", [])
         if not games:
@@ -1053,13 +1235,15 @@ class SteamWatchPlugin(Star):
             return cached[0]
         url = "https://store.steampowered.com/api/appdetails"
         params = {"appids": str(appid), "l": lang}
-        timeout_sec = int(self.config.get("request_timeout_sec", 10))
+        timeout_sec = int(self.config.get("request_timeout_sec", DEFAULT_REQUEST_TIMEOUT_SEC))
         try:
             async with self._create_http_client(timeout_sec, follow_redirects=True) as client:
                 resp = await client.get(url, params=params)
                 resp.raise_for_status()
                 data = resp.json()
-        except Exception:
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError, ValueError) as exc:
+            if bool(self.config.get("debug_log", False)):
+                logger.info("steamwatch fetch localized game name failed: %s", self._format_net_error(exc))
             return fallback
         item = data.get(str(appid), {})
         if isinstance(item, dict) and item.get("success"):
@@ -1074,11 +1258,13 @@ class SteamWatchPlugin(Star):
         url = "https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v0001/"
         params = {"key": api_key, "steamid": steamid, "appid": appid}
         try:
-            async with self._create_http_client(10) as client:
+            async with self._create_http_client(DEFAULT_REQUEST_TIMEOUT_SEC) as client:
                 resp = await client.get(url, params=params)
                 resp.raise_for_status()
                 data = resp.json()
-        except Exception:
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError, ValueError) as exc:
+            if bool(self.config.get("debug_log", False)):
+                logger.info("steamwatch fetch achievements failed: %s", self._format_net_error(exc))
             return None
         playerstats = data.get("playerstats", {})
         achievements = playerstats.get("achievements", [])
@@ -1088,35 +1274,304 @@ class SteamWatchPlugin(Star):
         achieved = sum(1 for a in achievements if a.get("achieved") == 1)
         return f"{achieved}/{total}"
 
-    async def _notify(self, text: str):
+    async def _notify(
+        self,
+        text: str,
+        appid: Optional[int] = None,
+        avatar_url: str = "",
+        is_playing: bool = False,
+    ):
         targets = self._get_notify_targets()
         if not targets:
             logger.info("No notify targets configured")
             return
-        await self._notify_to_targets(text, targets)
+        await self._notify_to_targets(
+            text,
+            targets,
+            appid=appid,
+            avatar_url=avatar_url,
+            is_playing=is_playing,
+        )
 
-    async def _notify_by_steamid(self, steamid: str, text: str):
+    async def _notify_by_steamid(
+        self,
+        steamid: str,
+        text: str,
+        appid: Optional[int] = None,
+        avatar_url: str = "",
+        is_playing: bool = False,
+    ):
         if self._group_enabled():
             groups = self._get_notify_groups()
             steamid_groups = self._get_steamid_groups()
             group = steamid_groups.get(steamid, "")
             if group and group in groups and groups[group]:
-                await self._notify_to_targets(text, groups[group])
+                await self._notify_to_targets(
+                    text,
+                    groups[group],
+                    appid=appid,
+                    avatar_url=avatar_url,
+                    is_playing=is_playing,
+                )
             # 分群订阅启用时，不回退到全局通知
             return
-        await self._notify(text)
+        await self._notify(text, appid=appid, avatar_url=avatar_url, is_playing=is_playing)
 
-    async def _notify_to_targets(self, text: str, targets: List[str]):
-        message = MessageChain().message(text)
+    async def _notify_to_targets(
+        self,
+        text: str,
+        targets: List[str],
+        appid: Optional[int] = None,
+        avatar_url: str = "",
+        is_playing: bool = False,
+    ):
+        message = await self._build_message_chain_for_text(
+            text,
+            appid=appid,
+            avatar_url=avatar_url,
+            is_playing=is_playing,
+            for_notify=True,
+        )
         for target in targets:
             try:
                 await self.context.send_message(target, message)
             except Exception:
                 logger.exception("Failed to send steamwatch notification")
 
+    async def _build_event_result(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        appid: Optional[int] = None,
+        avatar_url: str = "",
+        is_playing: bool = False,
+    ):
+        if not bool(self.config.get("render_as_image", True)):
+            return event.plain_result(text)
+        path = await self._render_text_image(
+            text=text,
+            appid=appid,
+            avatar_url=avatar_url,
+            is_playing=is_playing,
+        )
+        if not path:
+            return event.plain_result(text)
+        image_result = getattr(event, "image_result", None)
+        if callable(image_result):
+            try:
+                return image_result(path)
+            except Exception:
+                logger.exception("steamwatch image_result failed, fallback to chain")
+        return MessageChain().file_image(path)
+
+    async def _build_message_chain_for_text(
+        self,
+        text: str,
+        appid: Optional[int] = None,
+        avatar_url: str = "",
+        is_playing: bool = False,
+        for_notify: bool = False,
+    ) -> MessageChain:
+        if for_notify and not bool(self.config.get("render_image_in_notify", True)):
+            return MessageChain().message(text)
+        if not bool(self.config.get("render_as_image", True)):
+            return MessageChain().message(text)
+        path = await self._render_text_image(
+            text=text,
+            appid=appid,
+            avatar_url=avatar_url,
+            is_playing=is_playing,
+        )
+        if not path:
+            return MessageChain().message(text)
+        return MessageChain().file_image(path)
+
+    async def _render_text_image(
+        self,
+        text: str,
+        appid: Optional[int],
+        avatar_url: str,
+        is_playing: bool,
+    ) -> Optional[str]:
+        bg_url = self._pick_background_url(appid=appid, avatar_url=avatar_url, is_playing=is_playing)
+        image = await self._build_base_image(bg_url)
+        if image is None:
+            image = Image.new("RGB", DEFAULT_IMAGE_SIZE, DEFAULT_BG_COLOR)
+        image = image.convert("RGBA")
+
+        overlay_alpha = int(self.config.get("image_overlay_alpha", 120))
+        overlay = Image.new("RGBA", image.size, (0, 0, 0, max(0, min(255, overlay_alpha))))
+        image.alpha_composite(overlay)
+
+        font = self._load_image_font()
+        margin = int(self.config.get("image_padding", 44))
+        draw = ImageDraw.Draw(image)
+        line_h = (font.getbbox("国")[3] - font.getbbox("国")[1]) + int(self.config.get("image_line_spacing", 10))
+        card_padding = int(self.config.get("image_card_padding", 28))
+        card_margin = int(self.config.get("image_card_margin", margin))
+        max_width = image.size[0] - card_margin * 2 - card_padding * 2
+        lines = self._wrap_text(draw, font, text, max_width)
+        text_height = min(len(lines), max(1, (image.size[1] - card_margin * 2) // max(1, line_h))) * line_h
+        card_w = image.size[0] - card_margin * 2
+        card_h = min(image.size[1] - card_margin * 2, text_height + card_padding * 2)
+        card_x1 = card_margin
+        card_y1 = card_margin
+        card_x2 = card_x1 + card_w
+        card_y2 = card_y1 + card_h
+
+        card_box = (card_x1, card_y1, card_x2, card_y2)
+        bg_crop = image.crop(card_box).filter(ImageFilter.GaussianBlur(radius=float(self.config.get("image_card_blur", 12))))
+        image.paste(bg_crop, (card_x1, card_y1))
+        card_alpha = max(0, min(255, int(self.config.get("image_card_alpha", 160))))
+        card_fill = Image.new("RGBA", (card_w, card_h), (16, 20, 26, card_alpha))
+        image.paste(card_fill, (card_x1, card_y1), card_fill)
+
+        draw = ImageDraw.Draw(image)
+        y = card_y1 + card_padding
+        text_x = card_x1 + card_padding
+        text_max_y = card_y2 - card_padding
+        for line in lines:
+            if y + line_h > text_max_y:
+                break
+            draw.text((text_x, y), line, font=font, fill=str(self.config.get("image_text_color", DEFAULT_TEXT_COLOR)))
+            y += line_h
+
+        out_dir = Path(tempfile.gettempdir()) / "steamwatch"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"sw_{int(time.time() * 1000)}_{abs(hash(text))}.png"
+        image.convert("RGB").save(out_path, format="PNG")
+        return str(out_path)
+
+    def _pick_background_url(self, appid: Optional[int], avatar_url: str, is_playing: bool) -> str:
+        prefer_game = bool(self.config.get("image_prefer_game_bg", True))
+        default_bg = str(self.config.get("image_default_bg_url", DEFAULT_STEAM_BG_URL)).strip()
+        game_bg = f"https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/header.jpg" if appid else ""
+        if prefer_game and game_bg:
+            return game_bg
+        if default_bg:
+            return default_bg
+        if game_bg:
+            return game_bg
+        return avatar_url
+
+    async def _build_base_image(self, bg_url: str) -> Optional[Image.Image]:
+        width = int(self.config.get("image_width", DEFAULT_IMAGE_SIZE[0]))
+        height = int(self.config.get("image_height", DEFAULT_IMAGE_SIZE[1]))
+        if not bg_url:
+            return Image.new("RGB", (width, height), DEFAULT_BG_COLOR)
+        try:
+            timeout_sec = int(self.config.get("request_timeout_sec", DEFAULT_REQUEST_TIMEOUT_SEC))
+            async with self._create_http_client(timeout_sec, follow_redirects=True) as client:
+                resp = await client.get(bg_url)
+                resp.raise_for_status()
+            from io import BytesIO
+
+            img = Image.open(BytesIO(resp.content)).convert("RGB")
+            resampling = getattr(Image, "Resampling", None)
+            resize_filter = resampling.LANCZOS if resampling else Image.LANCZOS
+            return img.resize((width, height), resize_filter)
+        except Exception:
+            if bool(self.config.get("debug_log", False)):
+                logger.exception("steamwatch load background failed: %s", bg_url)
+            return Image.new("RGB", (width, height), DEFAULT_BG_COLOR)
+
+    async def _download_font(self, url: str, filename: str = "") -> Tuple[str, Optional[str]]:
+        timeout_sec = int(self.config.get("request_timeout_sec", DEFAULT_REQUEST_TIMEOUT_SEC))
+        retries = int(self.config.get("request_retries", DEFAULT_REQUEST_RETRIES))
+        retry_delay = float(self.config.get("request_retry_delay_sec", DEFAULT_REQUEST_RETRY_DELAY_SEC))
+        font_dir = Path(str(self.config.get("image_font_dir", "fonts/steamwatch")).strip() or "fonts/steamwatch")
+        font_dir.mkdir(parents=True, exist_ok=True)
+        clean_name = filename.strip() if filename else ""
+        if not clean_name:
+            clean_name = Path(url.split("?")[0]).name or f"steamwatch_font_{int(time.time())}.ttf"
+        if "." not in clean_name:
+            clean_name = f"{clean_name}.ttf"
+        out_path = font_dir / clean_name
+        last_exc: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            try:
+                async with self._create_http_client(timeout_sec, follow_redirects=True) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                out_path.write_bytes(resp.content)
+                return str(out_path.resolve()), None
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError, OSError, ValueError) as exc:
+                last_exc = exc
+                if attempt >= retries:
+                    break
+                await asyncio.sleep(retry_delay)
+        return "", self._format_net_error(last_exc or RuntimeError("unknown font download error"))
+
+    def _load_image_font(self) -> ImageFont.ImageFont:
+        font_size = int(self.config.get("image_font_size", 30))
+        font_path = str(self.config.get("image_font_path", "")).strip()
+        if not font_path and bool(self.config.get("image_auto_download_font", True)):
+            auto_path = Path(str(self.config.get("image_font_dir", "fonts/steamwatch")).strip() or "fonts/steamwatch") / "NotoSansCJKsc-VF.ttf"
+            if not auto_path.exists():
+                try:
+                    # 不阻塞主逻辑：失败就回退系统字体
+                    if not self._font_download_task or self._font_download_task.done():
+                        self._font_download_task = asyncio.create_task(self._download_font(DEFAULT_FONT_URL, auto_path.name))
+                except Exception:
+                    pass
+            if auto_path.exists():
+                font_path = str(auto_path)
+        candidates = [font_path] if font_path else []
+        candidates.extend(
+            [
+                "C:\\Windows\\Fonts\\msyh.ttc",
+                "C:\\Windows\\Fonts\\msyh.ttf",
+                "C:\\Windows\\Fonts\\simhei.ttf",
+                "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            ]
+        )
+        for path in candidates:
+            try:
+                if path and Path(path).exists():
+                    return ImageFont.truetype(path, size=font_size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    def _wrap_text(self, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, text: str, max_width: int) -> List[str]:
+        out: List[str] = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                out.append("")
+                continue
+            cur = ""
+            for ch in line:
+                nxt = cur + ch
+                if draw.textlength(nxt, font=font) <= max_width:
+                    cur = nxt
+                else:
+                    if cur:
+                        out.append(cur)
+                    cur = ch
+            if cur:
+                out.append(cur)
+        return out or [text]
+
     # ------------------------
     # Helpers: config/bindings
     # ------------------------
+    def _save_config_safe(self) -> None:
+        try:
+            self.config.save_config()
+        except Exception:
+            logger.exception("steamwatch save_config failed")
+
+    def _format_net_error(self, exc: Exception) -> str:
+        detail = str(exc).strip()
+        if not detail:
+            detail = repr(exc)
+        if not detail:
+            detail = "no detail"
+        return f"{exc.__class__.__name__}: {detail}"
+
     def _normalize_message_type(self, value: str) -> str:
         text = (value or "").strip()
         lowered = text.lower()
@@ -1189,7 +1644,7 @@ class SteamWatchPlugin(Star):
             changed = True
 
         if changed:
-            self.config.save_config()
+            self._save_config_safe()
 
     def _get_user_key(self, event: AstrMessageEvent) -> str:
         for name in ("get_sender_id", "get_user_id", "get_sender_uid"):
@@ -1215,7 +1670,7 @@ class SteamWatchPlugin(Star):
 
     def _set_steamids(self, steamids: List[str]):
         self.config["steamids"] = steamids
-        self.config.save_config()
+        self._save_config_safe()
 
     def _get_notify_targets(self) -> List[str]:
         targets = list(self.config.get("notify_targets", []))
@@ -1226,7 +1681,7 @@ class SteamWatchPlugin(Star):
                 cleaned.append(normalized)
         if cleaned != targets:
             self.config["notify_targets"] = cleaned
-            self.config.save_config()
+            self._save_config_safe()
         return cleaned
 
     def _set_notify_targets(self, targets: List[str]):
@@ -1236,7 +1691,7 @@ class SteamWatchPlugin(Star):
             if normalized and normalized not in cleaned:
                 cleaned.append(normalized)
         self.config["notify_targets"] = cleaned
-        self.config.save_config()
+        self._save_config_safe()
 
     def _get_bindings(self) -> Dict[str, str]:
         raw = list(self.config.get("bindings", []))
@@ -1252,7 +1707,7 @@ class SteamWatchPlugin(Star):
     def _set_bindings(self, bindings: Dict[str, str]):
         items = [f"{user_id}:{steamid}" for user_id, steamid in bindings.items()]
         self.config["bindings"] = items
-        self.config.save_config()
+        self._save_config_safe()
 
     def _get_binding_meta(self) -> Dict[str, str]:
         raw = list(self.config.get("binding_meta", []))
@@ -1268,7 +1723,7 @@ class SteamWatchPlugin(Star):
     def _set_binding_meta(self, meta: Dict[str, str]):
         items = [f"{user_id}:{name}" for user_id, name in meta.items()]
         self.config["binding_meta"] = items
-        self.config.save_config()
+        self._save_config_safe()
 
     def _group_enabled(self) -> bool:
         return bool(self.config.get("notify_group_enabled", False))
@@ -1306,7 +1761,7 @@ class SteamWatchPlugin(Star):
                 if normalized:
                     items.append(f"{group}:{normalized}")
         self.config["notify_groups"] = items
-        self.config.save_config()
+        self._save_config_safe()
 
     def _get_steamid_groups(self) -> Dict[str, str]:
         raw = list(self.config.get("steamid_groups", []))
@@ -1325,7 +1780,7 @@ class SteamWatchPlugin(Star):
     def _set_steamid_groups(self, groups: Dict[str, str]):
         items = [f"{sid}:{group}" for sid, group in groups.items()]
         self.config["steamid_groups"] = items
-        self.config.save_config()
+        self._save_config_safe()
 
     def _split_args(self, text: str) -> List[str]:
         if not text:

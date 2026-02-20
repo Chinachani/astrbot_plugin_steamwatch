@@ -34,6 +34,96 @@
     "description": "是否开启调试日志",
     "default": false
   },
+  "render_as_image": {
+    "type": "bool",
+    "description": "是否将查询/通知文本渲染为图片发送",
+    "default": true
+  },
+  "render_image_in_notify": {
+    "type": "bool",
+    "description": "轮询通知是否也发送图片（关闭则仅查询类发送图片）",
+    "default": true
+  },
+  "image_prefer_game_bg": {
+    "type": "bool",
+    "description": "背景优先级：true=优先游戏背景，false=优先默认背景",
+    "default": true
+  },
+  "image_default_bg_url": {
+    "type": "string",
+    "description": "默认背景图 URL（不在游戏时或游戏背景不可用时使用）",
+    "default": "https://cdn.cloudflare.steamstatic.com/store/home/store_home_share.jpg"
+  },
+  "image_width": {
+    "type": "int",
+    "description": "图片宽度（像素）",
+    "default": 1080
+  },
+  "image_height": {
+    "type": "int",
+    "description": "图片高度（像素）",
+    "default": 608
+  },
+  "image_padding": {
+    "type": "int",
+    "description": "图片文本边距（像素）",
+    "default": 44
+  },
+  "image_font_size": {
+    "type": "int",
+    "description": "图片字体大小",
+    "default": 30
+  },
+  "image_line_spacing": {
+    "type": "int",
+    "description": "图片行间距（像素）",
+    "default": 10
+  },
+  "image_overlay_alpha": {
+    "type": "int",
+    "description": "背景遮罩透明度（0-255，越大文字越清晰）",
+    "default": 145
+  },
+  "image_text_color": {
+    "type": "string",
+    "description": "图片文字颜色（HEX）",
+    "default": "#F2F5F8"
+  },
+  "image_font_path": {
+    "type": "string",
+    "description": "自定义字体文件路径（可留空自动找系统字体）",
+    "default": ""
+  },
+  "image_auto_download_font": {
+    "type": "bool",
+    "description": "未配置字体且系统字体不可用时，是否尝试自动下载中文字体",
+    "default": true
+  },
+  "image_font_dir": {
+    "type": "string",
+    "description": "字体下载目录（用于 /sw font dl 与自动下载）",
+    "default": "fonts/steamwatch"
+  },
+  "image_card_alpha": {
+    "type": "int",
+    "description": "磨砂卡片透明度（0-255）",
+    "default": 160
+  },
+  "image_card_blur": {
+    "type": "int",
+    "description": "磨砂卡片模糊半径（像素）",
+    "default": 12
+  },
+  "image_card_padding": {
+    "type": "int",
+    "description": "卡片内边距（像素）",
+    "default": 28
+  },
+  "image_card_margin": {
+    "type": "int",
+    "description": "卡片外边距（像素）",
+    "default": 44
+  },
   "verify_ssl": {
     "type": "bool",
     "description": "是否校验证书（关闭可绕过 CERTIFICATE_VERIFY_FAILED）",

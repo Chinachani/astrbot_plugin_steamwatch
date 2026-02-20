@@ -1,6 +1,6 @@
 ﻿name: astrbot_plugin_steamwatch
 desc: Steam 在线/在玩监控插件，支持绑定、@用户、分群通知与详细信息查询。
 help: /sw
-version: v1.1.11
+version: v1.2.2
 author: Chinachani
 repo: https://github.com/Chinachani/astrbot_plugin_steamwatch
