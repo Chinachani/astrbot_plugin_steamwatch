@@ -72,9 +72,9 @@
 
 ### 分群订阅
 启用 `notify_group_enabled` 后：
-- `/sw sub <group>` 订阅指定分组通知
-- `/sw unsub <group>` 取消订阅指定分组通知
-- `/sw add <steamid|me|@qq> <group>` 为监控对象绑定分组（用于通知路由）
+- `/sw sub <group>` 创建分组并且订阅
+- `/sw unsub <group>` 删除分组并取消订阅
+- `/sw add <steamid|me|@qq> <group>` 为指定分组添加监控对象
 - `/sw subinfo` 查看当前会话订阅
 - `/sw groupinfo [group]` 查看分组订阅详情
 - `/sw grouplist` 查看分组订阅列表
