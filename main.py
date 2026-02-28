@@ -49,7 +49,7 @@ DEFAULT_FONT_URL = "https://github.com/notofonts/noto-cjk/raw/main/Sans/Variable
     "astrbot_plugin_steamwatch",
     "Chinachani",
     "通过astrbot视奸你的steam好友！",
-    "1.2.2",
+    "1.2.3",
     "https://github.com/Chinachani/astrbot_plugin_steamwatch",
 )
 class SteamWatchPlugin(Star):
@@ -198,107 +198,128 @@ class SteamWatchPlugin(Star):
     # ------------------------
     @filter.command("steamwatch_add")
     async def add_watch(self, event: AstrMessageEvent, target: str = ""):
+        """添加监控目标（支持 SteamID/链接/好友码/me/@QQ）。"""
         async for item in self._cmd_add(event, [target] if target else []):
             yield item
 
     @filter.command("steamwatch_remove")
     async def remove_watch(self, event: AstrMessageEvent, target: str = ""):
+        """移除监控目标。"""
         async for item in self._cmd_remove(event, [target] if target else []):
             yield item
 
     @filter.command("steamwatch_list")
     async def list_watch(self, event: AstrMessageEvent):
+        """查看当前监控列表。"""
         async for item in self._cmd_list(event):
             yield item
 
     @filter.command("steamwatch_interval")
     async def set_interval(self, event: AstrMessageEvent, seconds: str = ""):
+        """设置轮询间隔（秒）。"""
         async for item in self._cmd_interval(event, [seconds] if seconds else []):
             yield item
 
     @filter.command("steamwatch_subscribe")
     async def subscribe(self, event: AstrMessageEvent):
+        """订阅当前会话通知。"""
         async for item in self._cmd_subscribe(event):
             yield item
 
     @filter.command("steamwatch_unsubscribe")
     async def unsubscribe(self, event: AstrMessageEvent):
+        """取消订阅当前会话通知。"""
         async for item in self._cmd_unsubscribe(event):
             yield item
 
     @filter.command("steamwatch_subinfo")
     async def subinfo(self, event: AstrMessageEvent):
+        """查看当前订阅信息。"""
         async for item in self._cmd_subinfo(event):
             yield item
 
     @filter.command("steamwatch_groupinfo")
     async def groupinfo(self, event: AstrMessageEvent, group: str = ""):
+        """查看订阅分组信息。"""
         async for item in self._cmd_groupinfo(event, [group] if group else []):
             yield item
 
     @filter.command("steamwatch_grouplist")
     async def grouplist(self, event: AstrMessageEvent):
+        """列出所有订阅分组。"""
         async for item in self._cmd_groupinfo(event, []):
             yield item
 
     @filter.command("steamwatch_resolve")
     async def resolve_friend_code(self, event: AstrMessageEvent, target: str = ""):
+        """解析目标到 SteamID64。"""
         async for item in self._cmd_resolve(event, [target] if target else []):
             yield item
 
     @filter.command("steamwatch_menu")
     async def menu(self, event: AstrMessageEvent):
+        """查看完整菜单与用法。"""
         async for item in self._full_menu_text(event):
             yield item
 
     @filter.command("steamwatch_query")
     async def query_once(self, event: AstrMessageEvent, target: str = ""):
+        """查询目标当前在线/游戏状态。"""
         async for item in self._cmd_query(event, [target] if target else []):
             yield item
 
     @filter.command("steamwatch_info")
     async def info(self, event: AstrMessageEvent, target: str = ""):
+        """查询目标详细资料。"""
         async for item in self._cmd_info(event, [target] if target else []):
             yield item
 
     @filter.command("steamwatch_test")
     async def test_access(self, event: AstrMessageEvent):
+        """测试 Steam API 连通性。"""
         async for item in self._cmd_test(event):
             yield item
 
     @filter.command("steamwatch_proxytest")
     async def proxy_test(self, event: AstrMessageEvent):
+        """测试当前代理连通性。"""
         async for item in self._cmd_proxytest(event):
             yield item
 
     @filter.command("steamwatch_preset")
     async def preset(self, event: AstrMessageEvent):
+        """一键应用推荐配置。"""
         async for item in self._cmd_apply_recommended_preset(event):
             yield item
 
     @filter.command("steamwatch_font")
     async def font_manage(self, event: AstrMessageEvent, args: str = ""):
+        """字体管理（下载/设置/状态）。"""
         tokens = self._split_args(args or self._extract_args_from_event(event, "steamwatch_font"))
         async for item in self._cmd_font(event, tokens):
             yield item
 
     @filter.command("steamwatch_status")
     async def push_status(self, event: AstrMessageEvent, target: str = ""):
+        """手动推送一次状态消息。"""
         async for item in self._cmd_status(event, [target] if target else []):
             yield item
 
     @filter.command("steamwatch_bind")
     async def bind_user(self, event: AstrMessageEvent, target: str = ""):
+        """绑定当前用户到 SteamID。"""
         async for item in self._cmd_bind(event, [target] if target else []):
             yield item
 
     @filter.command("steamwatch_unbind")
     async def unbind_user(self, event: AstrMessageEvent, user_id: str = ""):
+        """解绑用户 Steam 绑定关系。"""
         async for item in self._cmd_unbind(event, [user_id] if user_id else []):
             yield item
 
     @filter.command("steamwatch_me")
     async def me(self, event: AstrMessageEvent):
+        """查看当前用户绑定信息。"""
         async for item in self._cmd_me(event):
             yield item
 

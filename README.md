@@ -133,6 +133,9 @@
 仓库地址：https://github.com/Chinachani/steam-hosts-tools
 
 ## 更新日志
+### v1.2.3
+- 优化 AstrBot 行为列表，补充指令介绍
+
 ### v1.1.0
 - 新增 `/sw info`：展示更丰富的 Steam 信息（时长/成就/状态等）
 - 绑定与查询支持 @用户，且输出好友码为账号 ID（可选显示 CS:GO 好友码）
