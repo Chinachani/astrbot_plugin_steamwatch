@@ -133,8 +133,6 @@
 仓库地址：https://github.com/Chinachani/steam-hosts-tools
 
 ## 更新日志
-### v1.2.3
-- 优化 AstrBot 行为列表，补充指令介绍
 
 ### v1.1.0
 - 新增 `/sw info`：展示更丰富的 Steam 信息（时长/成就/状态等）
@@ -203,3 +201,6 @@
 - 下载字体举例 /sw font dl 下载链接 本地名称
 - 例图中的字体下载地址 [坊宋字体](https://raw.githubusercontent.com/dengcao/free-fonts/refs/heads/main/%E5%85%8D%E8%B4%B9%E5%95%86%E7%94%A8%E5%AD%97%E4%BD%93%EF%BC%88%E5%85%B11328%E6%AC%BE%2C1328%20free%20commercial%20fonts%EF%BC%89/%E4%B8%AD%E6%96%87%E5%AD%97%E4%BD%93%EF%BC%88%E5%85%B1348%E6%AC%BE%EF%BC%8C348%20Chinese%20fonts%EF%BC%89/%E5%9D%8A%E5%AE%8B%E5%AD%97%E4%BD%93.ttf)
 - 如下载失败可使用GitHub加速镜像链接下载[加速地址_坊宋字体](https://gh.llkk.cc/https://raw.githubusercontent.com/dengcao/free-fonts/refs/heads/main/%E5%85%8D%E8%B4%B9%E5%95%86%E7%94%A8%E5%AD%97%E4%BD%93%EF%BC%88%E5%85%B11328%E6%AC%BE%2C1328%20free%20commercial%20fonts%EF%BC%89/%E4%B8%AD%E6%96%87%E5%AD%97%E4%BD%93%EF%BC%88%E5%85%B1348%E6%AC%BE%EF%BC%8C348%20Chinese%20fonts%EF%BC%89/%E5%9D%8A%E5%AE%8B%E5%AD%97%E4%BD%93.ttf)
+
+### v1.2.3
+- 优化 AstrBot 行为列表，补充指令介绍
