@@ -15,19 +15,20 @@
 - `bindings`：用户绑定（由指令维护，格式 user_id:steamid64）
 - `binding_meta`：绑定昵称（由指令维护，格式 user_id:nickname）
 - `admin_user_ids`：管理员用户ID列表（为空则不限制敏感指令）
-- `auto_add_on_bind_when_no_admin`：管理员列表为空时，绑定自动加入监控
+- `auto_add_on_bind_when_no_admin`：管理员列表为空时，绑定自动加入监控（配置了管理员时不生效）
 - `notify_targets`：接收通知的会话目标
 - `default_platform_id`：订阅会话默认平台ID（兼容旧订阅）
 - `default_message_type`：订阅会话默认消息类型（GroupMessage/FriendMessage/OtherMessage）
 - `notify_group_enabled`：是否启用分群订阅
 - `notify_groups`：分群订阅（格式 group:target）
-- `steamid_groups`：SteamID 分组（格式 steamid:group）
+- `steamid_groups`：SteamID 分组（格式 steamid:group；同一 SteamID 可配置多条以加入多个分组）
 - `notify_on_stop`：是否在停止游戏时提醒
 - `request_timeout_sec`：请求超时（秒）
 - `request_retries`：请求重试次数
 - `request_retry_delay_sec`：重试间隔（秒）
 - `proxy_url`：代理地址（可选，例如 http://127.0.0.1:7890）
 - `debug_log`：是否开启调试日志
+- `menu_style`：菜单风格（`1` 经典列表，`2` 卡片分区）
 - `render_as_image`：是否将查询/通知文本渲染为图片发送
 - `render_image_in_notify`：轮询通知是否也发送图片（关闭则仅查询类发送图片）
 - `image_prefer_game_bg`：背景优先级（`true` 优先游戏背景，`false` 优先默认背景）
@@ -63,6 +64,7 @@
 - `/sw grouplist` 查看分组订阅列表
 - `/sw resolve|query|status|info`
 - `/sw test|proxytest|font|preset`
+- `/sw style [1|2]` 查看或切换菜单风格（管理员）
 - `/sw bind|unbind|me`
 
 说明：当 `admin_user_ids` 配置不为空时，以下指令仅管理员可用：添加/移除监控、查看列表、设置轮询、订阅/取消订阅通知。
@@ -74,12 +76,13 @@
 启用 `notify_group_enabled` 后：
 - `/sw sub <group>` 创建分组并且订阅
 - `/sw unsub <group>` 删除分组并取消订阅
-- `/sw add <steamid|me|@qq> <group>` 为指定分组添加监控对象
+- `/sw add <steamid|me|@qq> [group]` 为指定分组添加监控对象；同一账号可加入多个分组
+- `/sw remove <steamid|me|@qq> [group]` 指定 group 时仅移出该分组，无剩余分组时移出监控号池
 - `/sw subinfo` 查看当前会话订阅
 - `/sw groupinfo [group]` 查看分组订阅详情
 - `/sw grouplist` 查看分组订阅列表
 - `/sw subclean` 清理无效订阅（管理员）
-说明：启用分群订阅后，仅推送已分组目标，不再回退到全局订阅。
+说明：启用分群订阅后，仅推送已分组目标，不再回退到全局订阅。轮询使用统一监控号池，账号状态变化后会查找该账号所属的所有分组，并向这些分组的订阅会话去重推送。
 
 ### 完整菜单示例（模块化）
 ```
@@ -98,8 +101,8 @@
 ```
 
 ### 完整命令（兼容）
-- `/steamwatch_add <steamid64|profile_url|vanity|friend_code|me>` 添加监控
-- `/steamwatch_remove <steamid64|profile_url|vanity|friend_code|me>` 移除监控
+- `/steamwatch_add <steamid64|profile_url|vanity|friend_code|me> [group]` 添加监控
+- `/steamwatch_remove <steamid64|profile_url|vanity|friend_code|me> [group]` 移除监控
 - `/steamwatch_list` 查看监控列表
 - `/steamwatch_interval <seconds>` 设置轮询间隔
 - `/steamwatch_subscribe` 订阅当前会话通知（管理员）
@@ -114,8 +117,9 @@
 - `/steamwatch_info <steamid64|profile_url|vanity|friend_code|me>` 查询更多信息（成就/时长等）
 - `/steamwatch_test` 测试 Steam/Steam Web API 访问
 - `/steamwatch_proxytest` 测试代理是否生效
-- `/steamwatch_font` 图片字体下载/设置管理
+- `/steamwatch_font` 图片字体下载/设置管理（修改类操作需要管理员权限）
 - `/steamwatch_preset` 一键应用推荐图片配置（管理员）
+- `/steamwatch_menustyle [1|2]` 查看或切换菜单风格（管理员）
 - `/steamwatch_status <steamid64|profile_url|vanity|friend_code|me>` 推送当前状态
 - `/steamwatch_bind <steamid64|profile_url|vanity|friend_code>` 绑定自己的 SteamID
 - `/steamwatch_unbind [user_id]` 解除绑定（可选参数仅管理员）
@@ -204,3 +208,14 @@
 
 ### v1.2.3
 - 优化 AstrBot 行为列表，补充指令介绍
+
+### v1.2.4
+- 分群订阅改为号池轮询后按账号所属全部分组去重推送，同一 SteamID 可加入多个分组
+- `/sw remove <target> [group]` 支持仅移出指定分组，无剩余分组时自动移出监控号池
+- 字体下载/设置/清空改为管理员操作，并限制下载文件名避免路径穿越
+- 修复 Steam API HTTP 状态错误、自定义链接解析异常未被友好处理的问题
+- 修复配置了管理员后仍可能自动加入监控、解绑后昵称元数据残留、手改轮询间隔可低于 30 秒的问题
+
+### v1.2.5
+- 新增内置菜单风格 2（卡片分区样式），保留经典菜单风格 1
+- 新增 `/sw style [1|2]` 与 `/steamwatch_menustyle [1|2]` 用于查看或切换菜单风格

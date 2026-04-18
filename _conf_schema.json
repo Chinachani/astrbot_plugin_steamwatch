@@ -34,6 +34,11 @@
     "description": "是否开启调试日志",
     "default": false
   },
+  "menu_style": {
+    "type": "int",
+    "description": "菜单风格：1=经典列表，2=卡片分区",
+    "default": 1
+  },
   "render_as_image": {
     "type": "bool",
     "description": "是否将查询/通知文本渲染为图片发送",
@@ -171,7 +176,7 @@
   },
   "auto_add_on_bind_when_no_admin": {
     "type": "bool",
-    "description": "当管理员列表为空时，绑定自动加入监控",
+    "description": "当管理员列表为空时，绑定自动加入监控（配置了管理员时不生效）",
     "default": false
   },
   "notify_targets": {
@@ -201,7 +206,7 @@
   },
   "steamid_groups": {
     "type": "list",
-    "description": "SteamID 分组（格式 steamid:group）",
+    "description": "SteamID 分组（格式 steamid:group；同一 SteamID 可配置多条以加入多个分组）",
     "default": []
   },
   "notify_on_stop": {

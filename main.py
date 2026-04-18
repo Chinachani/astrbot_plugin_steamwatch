@@ -33,7 +33,7 @@ PERSONA_STATE_TEXT = {
 }
 
 DEFAULT_POLL_INTERVAL_SEC = 60
-MIN_POLL_INTERVAL_SEC = 5
+MIN_POLL_INTERVAL_SEC = 30
 DEFAULT_REQUEST_TIMEOUT_SEC = 10
 DEFAULT_REQUEST_RETRIES = 2
 DEFAULT_REQUEST_RETRY_DELAY_SEC = 2.0
@@ -49,7 +49,7 @@ DEFAULT_FONT_URL = "https://github.com/notofonts/noto-cjk/raw/main/Sans/Variable
     "astrbot_plugin_steamwatch",
     "Chinachani",
     "通过astrbot视奸你的steam好友！",
-    "1.2.3",
+    "1.2.5",
     "https://github.com/Chinachani/astrbot_plugin_steamwatch",
 )
 class SteamWatchPlugin(Star):
@@ -89,6 +89,10 @@ class SteamWatchPlugin(Star):
 
         if action in {"menu", "help"}:
             async for item in self._menu_text(event):
+                yield item
+            return
+        if action in {"style", "menustyle", "menu_style"}:
+            async for item in self._cmd_menu_style(event, rest):
                 yield item
             return
         if action in {"manage"}:
@@ -197,15 +201,17 @@ class SteamWatchPlugin(Star):
     # 原始命令（兼容）
     # ------------------------
     @filter.command("steamwatch_add")
-    async def add_watch(self, event: AstrMessageEvent, target: str = ""):
+    async def add_watch(self, event: AstrMessageEvent, args: str = ""):
         """添加监控目标（支持 SteamID/链接/好友码/me/@QQ）。"""
-        async for item in self._cmd_add(event, [target] if target else []):
+        tokens = self._split_args(args or self._extract_args_from_event(event, "steamwatch_add"))
+        async for item in self._cmd_add(event, tokens):
             yield item
 
     @filter.command("steamwatch_remove")
-    async def remove_watch(self, event: AstrMessageEvent, target: str = ""):
+    async def remove_watch(self, event: AstrMessageEvent, args: str = ""):
         """移除监控目标。"""
-        async for item in self._cmd_remove(event, [target] if target else []):
+        tokens = self._split_args(args or self._extract_args_from_event(event, "steamwatch_remove"))
+        async for item in self._cmd_remove(event, tokens):
             yield item
 
     @filter.command("steamwatch_list")
@@ -260,6 +266,13 @@ class SteamWatchPlugin(Star):
     async def menu(self, event: AstrMessageEvent):
         """查看完整菜单与用法。"""
         async for item in self._full_menu_text(event):
+            yield item
+
+    @filter.command("steamwatch_menustyle")
+    async def menu_style(self, event: AstrMessageEvent, args: str = ""):
+        """查看或切换菜单风格。"""
+        tokens = self._split_args(args or self._extract_args_from_event(event, "steamwatch_menustyle"))
+        async for item in self._cmd_menu_style(event, tokens):
             yield item
 
     @filter.command("steamwatch_query")
@@ -327,7 +340,7 @@ class SteamWatchPlugin(Star):
     # Command handlers
     # ------------------------
     def _require_admin(self, event: AstrMessageEvent) -> Optional[str]:
-        admins = [str(x) for x in self.config.get("admin_user_ids", [])]
+        admins = [str(x).strip() for x in self.config.get("admin_user_ids", []) if str(x).strip()]
         if not admins:
             return None
         user_key = self._get_user_key(event)
@@ -377,22 +390,25 @@ class SteamWatchPlugin(Star):
         if steamid in steamids:
             if group:
                 groups = self._get_steamid_groups()
-                groups[steamid] = group
-                self._set_steamid_groups(groups)
-                yield event.plain_result(f"{steamid} 已在监控列表中，已更新分组：{group}")
+                if self._add_steamid_group(groups, steamid, group):
+                    self._set_steamid_groups(groups)
+                    joined = "、".join(groups.get(steamid, []))
+                    yield event.plain_result(f"{steamid} 已在监控号池中，已加入分组：{group}。当前分组：{joined}")
+                else:
+                    yield event.plain_result(f"{steamid} 已在监控号池中，且已属于分组：{group}")
             else:
-                yield event.plain_result(f"{steamid} 已在监控列表中。")
+                yield event.plain_result(f"{steamid} 已在监控号池中。")
             return
 
         steamids.append(steamid)
         self._set_steamids(steamids)
         if group:
             groups = self._get_steamid_groups()
-            groups[steamid] = group
+            self._add_steamid_group(groups, steamid, group)
             self._set_steamid_groups(groups)
-            yield event.plain_result(f"已添加 {steamid} 到监控列表。分组：{group}")
+            yield event.plain_result(f"已添加 {steamid} 到监控号池。分组：{group}")
         else:
-            yield event.plain_result(f"已添加 {steamid} 到监控列表。")
+            yield event.plain_result(f"已添加 {steamid} 到监控号池。")
 
     async def _cmd_remove(self, event: AstrMessageEvent, args: List[str]):
         deny = self._require_admin(event)
@@ -401,7 +417,7 @@ class SteamWatchPlugin(Star):
             return
         target = self._extract_target_or_at(event, args)
         if not target:
-            yield event.plain_result("用法：/sw remove <steamid64|profile_url|vanity|friend_code|me>")
+            yield event.plain_result("用法：/sw remove <steamid64|profile_url|vanity|friend_code|me> [group]")
             return
 
         steamid, error = await self._resolve_to_steamid64(event, target)
@@ -414,6 +430,21 @@ class SteamWatchPlugin(Star):
             yield event.plain_result(f"{steamid} 不在监控列表中。")
             return
 
+        group = args[1] if len(args) > 1 else ""
+        if self._group_enabled() and group:
+            groups = self._get_steamid_groups()
+            current_groups = groups.get(steamid, [])
+            if group not in current_groups:
+                yield event.plain_result(f"{steamid} 不属于分组：{group}")
+                return
+            groups[steamid] = [g for g in current_groups if g != group]
+            if groups[steamid]:
+                self._set_steamid_groups(groups)
+                yield event.plain_result(f"已将 {steamid} 从分组 {group} 移除。剩余分组：{'、'.join(groups[steamid])}")
+                return
+            groups.pop(steamid, None)
+            self._set_steamid_groups(groups)
+
         steamids.remove(steamid)
         self._set_steamids(steamids)
         self._last_state.pop(steamid, None)
@@ -422,7 +453,10 @@ class SteamWatchPlugin(Star):
         if steamid in groups:
             groups.pop(steamid, None)
             self._set_steamid_groups(groups)
-        yield event.plain_result(f"已从监控列表移除 {steamid}。")
+        if group:
+            yield event.plain_result(f"已将 {steamid} 从分组 {group} 移除；无其他分组，已从监控号池移除。")
+        else:
+            yield event.plain_result(f"已从监控号池移除 {steamid}。")
 
     async def _cmd_list(self, event: AstrMessageEvent):
         deny = self._require_admin(event)
@@ -439,7 +473,8 @@ class SteamWatchPlugin(Star):
         lines = ["监控列表："]
         for sid in steamids:
             users = [u for u, s in bindings.items() if s == sid]
-            group = groups.get(sid, "")
+            group_names = groups.get(sid, [])
+            group_text = "、".join(group_names)
             if users:
                 # 仅展示第一个绑定用户
                 uid = users[0]
@@ -448,13 +483,13 @@ class SteamWatchPlugin(Star):
                     suffix = f"{name}（{uid}）"
                 else:
                     suffix = f"QQ: {uid}"
-                if group:
-                    lines.append(f"- {sid}  ({suffix}，分组：{group})")
+                if group_text:
+                    lines.append(f"- {sid}  ({suffix}，分组：{group_text})")
                 else:
                     lines.append(f"- {sid}  ({suffix})")
             else:
-                if group:
-                    lines.append(f"- {sid}  (分组：{group})")
+                if group_text:
+                    lines.append(f"- {sid}  (分组：{group_text})")
                 else:
                     lines.append(f"- {sid}")
         yield event.plain_result("\n".join(lines))
@@ -559,22 +594,40 @@ class SteamWatchPlugin(Star):
             yield event.plain_result("未启用分群订阅，请先开启 notify_group_enabled。")
             return
         groups = self._get_notify_groups()
+        steamid_groups = self._get_steamid_groups()
+        group_accounts: Dict[str, List[str]] = {}
+        for sid, group_names in steamid_groups.items():
+            for group_name in group_names:
+                group_accounts.setdefault(group_name, []).append(sid)
         if not args:
-            if not groups:
+            all_group_names = sorted(set(groups) | set(group_accounts))
+            if not all_group_names:
                 yield event.plain_result("暂无分组订阅记录。")
                 return
             lines = ["分组订阅列表："]
-            for name, targets in groups.items():
-                lines.append(f"- {name}（{len(targets)} 个会话）")
+            for name in all_group_names:
+                targets = groups.get(name, [])
+                accounts = group_accounts.get(name, [])
+                lines.append(f"- {name}（{len(targets)} 个会话，{len(accounts)} 个账号）")
             yield event.plain_result("\n".join(lines))
             return
         name = args[0]
         targets = groups.get(name, [])
-        if not targets:
-            yield event.plain_result("该分组没有任何订阅会话。")
+        accounts = group_accounts.get(name, [])
+        if not targets and not accounts:
+            yield event.plain_result("该分组没有订阅会话或监控账号。")
             return
-        lines = [f"分组 {name} 订阅会话："]
-        lines.extend(f"- {t}" for t in targets)
+        lines = [f"分组 {name}："]
+        lines.append("订阅会话：")
+        if targets:
+            lines.extend(f"- {t}" for t in targets)
+        else:
+            lines.append("- 无")
+        lines.append("监控账号：")
+        if accounts:
+            lines.extend(f"- {sid}" for sid in accounts)
+        else:
+            lines.append("- 无")
         yield event.plain_result("\n".join(lines))
 
     async def _cmd_subclean(self, event: AstrMessageEvent):
@@ -829,6 +882,32 @@ class SteamWatchPlugin(Star):
             "已应用推荐配置：图片输出、游戏头图优先、磨砂卡片与中文字体自动下载。"
         )
 
+    async def _cmd_menu_style(self, event: AstrMessageEvent, args: List[str]):
+        current = self._get_menu_style()
+        if not args:
+            yield event.plain_result(
+                "\n".join(
+                    [
+                        f"当前菜单风格：{current}",
+                        "可用风格：1=经典列表，2=卡片分区",
+                        "用法：/sw style <1|2>",
+                    ]
+                )
+            )
+            return
+        value = args[0].strip()
+        if value not in {"1", "2"}:
+            yield event.plain_result("菜单风格只支持 1 或 2。用法：/sw style <1|2>")
+            return
+        deny = self._require_admin(event)
+        if deny:
+            yield event.plain_result(deny)
+            return
+        style = int(value)
+        self.config["menu_style"] = style
+        self._save_config_safe()
+        yield event.plain_result(f"菜单风格已切换为 {style}。输入 /sw 查看效果。")
+
     async def _cmd_font(self, event: AstrMessageEvent, args: List[str]):
         if not args:
             current = str(self.config.get("image_font_path", "")).strip() or "未设置（自动选择系统字体）"
@@ -845,6 +924,10 @@ class SteamWatchPlugin(Star):
             )
             return
         action = args[0].lower()
+        deny = self._require_admin(event)
+        if deny:
+            yield event.plain_result(deny)
+            return
         if action in {"clear", "reset"}:
             self.config["image_font_path"] = ""
             self._save_config_safe()
@@ -855,10 +938,10 @@ class SteamWatchPlugin(Star):
                 yield event.plain_result("用法：/sw font set <path>")
                 return
             path = " ".join(args[1:]).strip().strip("\"'")
-            if not Path(path).exists():
+            if not Path(path).expanduser().exists():
                 yield event.plain_result(f"字体文件不存在：{path}")
                 return
-            self.config["image_font_path"] = path
+            self.config["image_font_path"] = str(Path(path).expanduser())
             self._save_config_safe()
             yield event.plain_result(f"字体已切换：{path}")
             return
@@ -925,7 +1008,7 @@ class SteamWatchPlugin(Star):
                 group = self._get_current_sub_group(event)
                 if group:
                     groups = self._get_steamid_groups()
-                    groups[steamid] = group
+                    self._add_steamid_group(groups, steamid, group)
                     self._set_steamid_groups(groups)
         yield event.plain_result(f"已绑定：{user_key} -> {friend_code}（64ID：{steamid}）{extra}")
 
@@ -944,6 +1027,10 @@ class SteamWatchPlugin(Star):
             return
         bindings.pop(target_user, None)
         self._set_bindings(bindings)
+        meta = self._get_binding_meta()
+        if target_user in meta:
+            meta.pop(target_user, None)
+            self._set_binding_meta(meta)
         yield event.plain_result("已解除绑定。")
 
     async def _cmd_me(self, event: AstrMessageEvent):
@@ -961,6 +1048,29 @@ class SteamWatchPlugin(Star):
         yield event.plain_result(f"当前绑定：{friend_code}（64ID：{steamid}）{extra}")
 
     async def _menu_text(self, event: AstrMessageEvent):
+        if self._get_menu_style() == 2:
+            lines = [
+                "╭─ SteamWatch v1.2.5 ─╮",
+                "│ 入口：/sw <模块>     │",
+                "╰────────────────────╯",
+                "",
+                "可用模块",
+                "  manage   监控号池、分组、轮询",
+                "  notify   订阅、分组、清理",
+                "  query    查询、解析、状态推送",
+                "  bind     绑定、解绑、我的账号",
+                "  net      网络、代理、字体、预设",
+                "",
+                "常用示例",
+                "  /sw query me",
+                "  /sw add me default",
+                "  /sw sub default",
+                "",
+                "菜单风格：/sw style <1|2>",
+                "完整命令：/steamwatch_menu",
+            ]
+            yield event.plain_result("\n".join(lines))
+            return
         lines = [
             "========== SteamWatch 菜单 ==========",
             "简化入口：/sw <模块>",
@@ -973,18 +1083,59 @@ class SteamWatchPlugin(Star):
             "【网络】/sw net     - 连通性测试",
             "--------------------------------------",
             "示例：/sw notify",
+            "菜单风格：/sw style <1|2>",
             "完整命令：/steamwatch_menu",
         ]
         yield event.plain_result("\n".join(lines))
 
     async def _full_menu_text(self, event: AstrMessageEvent):
+        if self._get_menu_style() == 2:
+            lines = [
+                "╭─ SteamWatch 完整命令 ─╮",
+                "│ 简化入口：/sw          │",
+                "╰──────────────────────╯",
+                "",
+                "管理",
+                "  /steamwatch_add <目标> [分组]",
+                "  /steamwatch_remove <目标> [分组]",
+                "  /steamwatch_list",
+                "  /steamwatch_interval <seconds>",
+                "",
+                "通知",
+                "  /steamwatch_subscribe [group]",
+                "  /steamwatch_unsubscribe [group]",
+                "  /steamwatch_subinfo",
+                "  /steamwatch_groupinfo [group]",
+                "  /steamwatch_grouplist",
+                "  /steamwatch_subclean",
+                "",
+                "查询",
+                "  /steamwatch_query <目标>",
+                "  /steamwatch_info <目标>",
+                "  /steamwatch_status <目标>",
+                "  /steamwatch_resolve <目标>",
+                "",
+                "绑定",
+                "  /steamwatch_bind <目标>",
+                "  /steamwatch_unbind [user_id]",
+                "  /steamwatch_me",
+                "",
+                "网络与显示",
+                "  /steamwatch_test",
+                "  /steamwatch_proxytest",
+                "  /steamwatch_font",
+                "  /steamwatch_preset",
+                "  /steamwatch_menustyle [1|2]",
+            ]
+            yield event.plain_result("\n".join(lines))
+            return
         lines = [
             "========== SteamWatch 完整菜单 ==========",
             "简化入口：/sw",
             "",
             "管理（管理员）：",
-            "/steamwatch_add <steamid64|profile_url|vanity|friend_code|me>",
-            "/steamwatch_remove <steamid64|profile_url|vanity|friend_code|me>",
+            "/steamwatch_add <steamid64|profile_url|vanity|friend_code|me> [group]",
+            "/steamwatch_remove <steamid64|profile_url|vanity|friend_code|me> [group]",
             "/steamwatch_list",
             "/steamwatch_interval <seconds>",
             "/steamwatch_subscribe [group]",
@@ -1010,20 +1161,68 @@ class SteamWatchPlugin(Star):
             "",
             "菜单：",
             "/steamwatch_menu",
+            "/steamwatch_menustyle [1|2]",
         ]
         yield event.plain_result("\n".join(lines))
 
     def _menu_manage(self) -> str:
+        if self._get_menu_style() == 2:
+            return "\n".join([
+                "╭─ 管理模块 ─╮",
+                "│ 监控号池与轮询设置 │",
+                "╰────────────╯",
+                "",
+                "/sw add <目标> [分组]",
+                "  添加 SteamID 到监控号池，可加入指定分组",
+                "",
+                "/sw remove <目标> [分组]",
+                "  不填分组：移出监控号池",
+                "  填写分组：仅移出该分组",
+                "",
+                "/sw list",
+                "  查看监控号池与账号分组",
+                "",
+                "/sw interval <秒>",
+                "  设置轮询间隔，最低 30 秒",
+                "",
+                "目标支持：steamid / profile / vanity / friend_code / me / @用户",
+            ])
         return "\n".join([
             "【管理模块】",
             "----------------------",
             "/sw add <steamid|profile|vanity|friend_code|me> [group]  添加监控",
-            "/sw remove <steamid|profile|vanity|friend_code|me>       移除监控",
+            "/sw remove <steamid|profile|vanity|friend_code|me> [group] 移除监控",
             "/sw list                                       查看监控列表",
             "/sw interval <seconds>  (>=30)                 设置轮询间隔",
         ])
 
     def _menu_notify(self) -> str:
+        if self._get_menu_style() == 2:
+            return "\n".join([
+                "╭─ 通知模块 ─╮",
+                "│ 会话订阅与分组推送 │",
+                "╰────────────╯",
+                "",
+                "/sw sub [分组]",
+                "  当前会话订阅全局或指定分组",
+                "",
+                "/sw unsub [分组]",
+                "  取消当前会话订阅",
+                "",
+                "/sw subinfo",
+                "  查看当前会话订阅状态",
+                "",
+                "/sw groupinfo [分组]",
+                "  查看分组订阅会话和监控账号",
+                "",
+                "/sw grouplist",
+                "  查看全部分组概览",
+                "",
+                "/sw subclean",
+                "  清理无效订阅，管理员可用",
+                "",
+                "提示：启用分群后，账号状态会推送到它所属的所有订阅分组。",
+            ])
         return "\n".join([
             "【通知模块】",
             "----------------------",
@@ -1037,6 +1236,26 @@ class SteamWatchPlugin(Star):
         ])
 
     def _menu_query(self) -> str:
+        if self._get_menu_style() == 2:
+            return "\n".join([
+                "╭─ 查询模块 ─╮",
+                "│ Steam 状态与资料查询 │",
+                "╰────────────╯",
+                "",
+                "/sw query <目标>",
+                "  快速查看是否正在游戏",
+                "",
+                "/sw info <目标>",
+                "  查看昵称、状态、时长、成就等信息",
+                "",
+                "/sw status <目标>",
+                "  手动推送一次当前状态",
+                "",
+                "/sw resolve <目标>",
+                "  解析为 SteamID64 和好友码",
+                "",
+                "目标支持：steamid / profile / vanity / friend_code / me / @用户",
+            ])
         return "\n".join([
             "【查询模块】",
             "----------------------",
@@ -1047,6 +1266,23 @@ class SteamWatchPlugin(Star):
         ])
 
     def _menu_bind(self) -> str:
+        if self._get_menu_style() == 2:
+            return "\n".join([
+                "╭─ 绑定模块 ─╮",
+                "│ 用户与 SteamID 绑定 │",
+                "╰────────────╯",
+                "",
+                "/sw bind <目标>",
+                "  绑定自己的 Steam 账号",
+                "",
+                "/sw unbind [user_id]",
+                "  解绑自己；管理员可指定用户",
+                "",
+                "/sw me",
+                "  查看自己的绑定信息",
+                "",
+                "说明：配置了管理员后，绑定不会自动加入监控号池。",
+            ])
         return "\n".join([
             "【绑定模块】",
             "----------------------",
@@ -1056,6 +1292,36 @@ class SteamWatchPlugin(Star):
         ])
 
     def _menu_net(self) -> str:
+        if self._get_menu_style() == 2:
+            return "\n".join([
+                "╭─ 网络模块 ─╮",
+                "│ 连通性、代理、图片配置 │",
+                "╰────────────╯",
+                "",
+                "/sw test",
+                "  测试 Steam 与 Steam Web API 连通性",
+                "",
+                "/sw proxytest",
+                "  测试代理出口是否生效",
+                "",
+                "/sw font",
+                "  查看字体配置",
+                "",
+                "/sw font dl [url] [文件名]",
+                "  下载字体并启用，管理员可用",
+                "",
+                "/sw font set <路径>",
+                "  指定本地字体，管理员可用",
+                "",
+                "/sw font clear",
+                "  清空字体配置，管理员可用",
+                "",
+                "/sw preset",
+                "  应用推荐图片配置，管理员可用",
+                "",
+                "/sw style <1|2>",
+                "  切换菜单风格，管理员可用",
+            ])
         return "\n".join([
             "【网络模块】",
             "----------------------",
@@ -1063,6 +1329,7 @@ class SteamWatchPlugin(Star):
             "/sw proxytest  测试代理是否生效",
             "/sw font ...   下载/切换图片字体",
             "/sw preset     一键应用推荐图片配置(管理员)",
+            "/sw style <1|2> 切换菜单风格(管理员)",
         ])
 
     # ------------------------
@@ -1179,7 +1446,7 @@ class SteamWatchPlugin(Star):
                         resp.raise_for_status()
                         any_success = True
                         break
-                    except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+                    except httpx.HTTPError as exc:
                         if attempt >= retries:
                             logger.warning(
                                 "steamwatch request failed after %s retries: %s: %r",
@@ -1323,13 +1590,17 @@ class SteamWatchPlugin(Star):
         is_playing: bool = False,
     ):
         if self._group_enabled():
-            groups = self._get_notify_groups()
+            notify_groups = self._get_notify_groups()
             steamid_groups = self._get_steamid_groups()
-            group = steamid_groups.get(steamid, "")
-            if group and group in groups and groups[group]:
+            fanout_targets: List[str] = []
+            for group in steamid_groups.get(steamid, []):
+                for target in notify_groups.get(group, []):
+                    if target not in fanout_targets:
+                        fanout_targets.append(target)
+            if fanout_targets:
                 await self._notify_to_targets(
                     text,
-                    groups[group],
+                    fanout_targets,
                     appid=appid,
                     avatar_url=avatar_url,
                     is_playing=is_playing,
@@ -1500,14 +1771,23 @@ class SteamWatchPlugin(Star):
         timeout_sec = int(self.config.get("request_timeout_sec", DEFAULT_REQUEST_TIMEOUT_SEC))
         retries = int(self.config.get("request_retries", DEFAULT_REQUEST_RETRIES))
         retry_delay = float(self.config.get("request_retry_delay_sec", DEFAULT_REQUEST_RETRY_DELAY_SEC))
-        font_dir = Path(str(self.config.get("image_font_dir", "fonts/steamwatch")).strip() or "fonts/steamwatch")
+        font_dir = Path(str(self.config.get("image_font_dir", "fonts/steamwatch")).strip() or "fonts/steamwatch").expanduser()
         font_dir.mkdir(parents=True, exist_ok=True)
+        font_dir_resolved = font_dir.resolve()
         clean_name = filename.strip() if filename else ""
         if not clean_name:
-            clean_name = Path(url.split("?")[0]).name or f"steamwatch_font_{int(time.time())}.ttf"
+            clean_name = Path(url.split("?")[0].replace("\\", "/")).name or f"steamwatch_font_{int(time.time())}.ttf"
+        else:
+            clean_name = Path(clean_name.replace("\\", "/")).name
+        if clean_name in {"", ".", ".."}:
+            clean_name = f"steamwatch_font_{int(time.time())}.ttf"
         if "." not in clean_name:
             clean_name = f"{clean_name}.ttf"
-        out_path = font_dir / clean_name
+        out_path = (font_dir_resolved / clean_name).resolve()
+        try:
+            out_path.relative_to(font_dir_resolved)
+        except ValueError:
+            return "", "字体文件名无效。"
         last_exc: Optional[Exception] = None
         for attempt in range(retries + 1):
             try:
@@ -1592,6 +1872,13 @@ class SteamWatchPlugin(Star):
         if not detail:
             detail = "no detail"
         return f"{exc.__class__.__name__}: {detail}"
+
+    def _get_menu_style(self) -> int:
+        try:
+            style = int(self.config.get("menu_style", 1))
+        except Exception:
+            return 1
+        return style if style in {1, 2} else 1
 
     def _normalize_message_type(self, value: str) -> str:
         text = (value or "").strip()
@@ -1784,24 +2071,53 @@ class SteamWatchPlugin(Star):
         self.config["notify_groups"] = items
         self._save_config_safe()
 
-    def _get_steamid_groups(self) -> Dict[str, str]:
+    def _get_steamid_groups(self) -> Dict[str, List[str]]:
         raw = list(self.config.get("steamid_groups", []))
-        groups: Dict[str, str] = {}
+        groups: Dict[str, List[str]] = {}
         for item in raw:
             if not isinstance(item, str) or ":" not in item:
                 continue
             sid, group = item.split(":", 1)
+            sid = sid.strip()
+            group = group.strip()
             if sid and group:
-                groups[sid] = group
+                groups.setdefault(sid, [])
+                if group not in groups[sid]:
+                    groups[sid].append(group)
         return groups
 
     def _auto_add_on_bind(self) -> bool:
-        return bool(self.config.get("auto_add_on_bind_when_no_admin", False))
+        admins = [str(x).strip() for x in self.config.get("admin_user_ids", []) if str(x).strip()]
+        return bool(self.config.get("auto_add_on_bind_when_no_admin", False)) and not admins
 
-    def _set_steamid_groups(self, groups: Dict[str, str]):
-        items = [f"{sid}:{group}" for sid, group in groups.items()]
+    def _set_steamid_groups(self, groups: Dict[str, List[str]]):
+        items: List[str] = []
+        for sid, group_names in groups.items():
+            sid_text = str(sid).strip()
+            if not sid_text:
+                continue
+            if isinstance(group_names, str):
+                group_iter = [group_names]
+            else:
+                group_iter = group_names
+            for group in group_iter:
+                group_text = str(group).strip()
+                item = f"{sid_text}:{group_text}"
+                if group_text and item not in items:
+                    items.append(item)
         self.config["steamid_groups"] = items
         self._save_config_safe()
+
+    def _add_steamid_group(self, groups: Dict[str, List[str]], steamid: str, group: str) -> bool:
+        steamid = str(steamid).strip()
+        group = str(group).strip()
+        if not steamid or not group:
+            return False
+        groups.setdefault(steamid, [])
+        if group in groups[steamid]:
+            return False
+        groups[steamid].append(group)
+        return True
 
     def _split_args(self, text: str) -> List[str]:
         if not text:
@@ -1961,12 +2277,15 @@ class SteamWatchPlugin(Star):
         if not api_key:
             return None, "解析自定义链接需要 Steam Web API Key。"
         url = "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/"
-        async with self._create_http_client(10) as client:
-            resp = await client.get(url, params={"key": api_key, "vanityurl": vanity})
-            resp.raise_for_status()
-            data = resp.json().get("response", {})
-            if data.get("success") == 1:
-                return data.get("steamid"), None
+        try:
+            async with self._create_http_client(10) as client:
+                resp = await client.get(url, params={"key": api_key, "vanityurl": vanity})
+                resp.raise_for_status()
+                data = resp.json().get("response", {})
+                if data.get("success") == 1:
+                    return data.get("steamid"), None
+        except (httpx.HTTPError, ValueError) as exc:
+            return None, f"解析自定义链接失败：{self._format_net_error(exc)}"
         return None, "无法解析自定义链接。"
 
     async def _resolve_short_url(self, url: str) -> Tuple[Optional[str], Optional[str]]:
